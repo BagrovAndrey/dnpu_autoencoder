@@ -1,0 +1,17 @@
+name: dnpu-ae
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - tqdm
+  - pytest
+  - jupyterlab
+  - pytorch
+  - pip:
+      - git+https://github.com/BraiNEdarwin/brains-py.git
