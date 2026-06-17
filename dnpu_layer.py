@@ -5,9 +5,12 @@ import torch.nn as nn
 class DNPUUnit(nn.Module):
     """
     One DNPU call:
-        4 data voltages + 3 trainable control voltages -> 1 scalar output.
 
-    This assumes the surrogate processor expects 7 activation electrodes.
+        n_data data voltages + n_control trainable control voltages -> 1 scalar output
+
+    The calibrated surrogate processor expects exactly 7 activation electrodes,
+    so n_data + n_control must be 7.
+
     By default:
         electrodes 0,1,2,3 are data inputs
         electrodes 4,5,6 are trainable controls
@@ -35,10 +38,16 @@ class DNPUUnit(nn.Module):
         self.register_buffer("v_min", voltage_ranges[:, 0])
         self.register_buffer("v_max", voltage_ranges[:, 1])
 
-        if len(self.data_indices) != 4:
-            raise ValueError("This MVP DNPUUnit expects exactly 4 data electrodes.")
-        if len(self.control_indices) != 3:
-            raise ValueError("This MVP DNPUUnit expects exactly 3 control electrodes.")
+        if len(self.data_indices) + len(self.control_indices) != 7:
+            raise ValueError("data_indices + control_indices must contain 7 electrodes.")
+
+        if sorted(self.data_indices + self.control_indices) != list(range(7)):
+            raise ValueError(
+                "data_indices and control_indices must be a non-overlapping "
+                "partition of electrodes 0..6."
+            )
+
+        n_control = len(self.control_indices)
 
         if init == "center":
             ctrl0 = 0.5 * (
@@ -47,11 +56,19 @@ class DNPUUnit(nn.Module):
         elif init == "random":
             lo = self.v_min[self.control_indices]
             hi = self.v_max[self.control_indices]
-            ctrl0 = lo + torch.rand(3) * (hi - lo)
+            ctrl0 = lo + torch.rand(n_control) * (hi - lo)
         else:
             raise ValueError(f"Unknown init: {init}")
 
         self.control_voltages = nn.Parameter(ctrl0.clone())
+
+    @property
+    def n_data(self):
+        return len(self.data_indices)
+
+    @property
+    def n_control(self):
+        return len(self.control_indices)
 
     @torch.no_grad()
     def clip_controls_(self):
@@ -61,11 +78,14 @@ class DNPUUnit(nn.Module):
 
     def forward(self, x_data):
         """
-        x_data: tensor of shape (batch, 4)
+        x_data: tensor of shape (batch, n_data)
         returns: tensor of shape (batch, 1)
         """
-        if x_data.ndim != 2 or x_data.shape[1] != 4:
-            raise ValueError(f"Expected x_data shape (batch, 4), got {tuple(x_data.shape)}")
+        if x_data.ndim != 2 or x_data.shape[1] != self.n_data:
+            raise ValueError(
+                f"Expected x_data shape (batch, {self.n_data}), "
+                f"got {tuple(x_data.shape)}"
+            )
 
         batch_size = x_data.shape[0]
         device = x_data.device
@@ -73,10 +93,8 @@ class DNPUUnit(nn.Module):
 
         full_x = torch.zeros(batch_size, 7, device=device, dtype=dtype)
 
-        # Fill data electrodes.
         full_x[:, self.data_indices] = x_data
 
-        # Fill control electrodes. Same controls for every batch item.
         controls = self.control_voltages.to(device=device, dtype=dtype)
         full_x[:, self.control_indices] = controls.unsqueeze(0).expand(batch_size, -1)
 
@@ -92,14 +110,14 @@ class DNPULayer(nn.Module):
     devices in a planar encoder layout, not as repeated time-multiplexed calls
     to a single physical device.
 
-    Each unit receives 4 selected coordinates from the input vector and has
-    its own 3 trainable control voltages.
+    Each unit receives n_data selected coordinates from the input vector and
+    has its own trainable control voltages.
 
     input_groups:
         list of lists/tuples, length n_units.
-        Each group contains exactly 4 indices into the input vector.
+        Each group contains exactly n_data indices into the input vector.
 
-    Example:
+    Example for 4x4 images and n_data=4:
         input_groups = [
             [0, 1, 4, 5],
             [2, 3, 6, 7],
@@ -122,9 +140,13 @@ class DNPULayer(nn.Module):
         if len(input_groups) == 0:
             raise ValueError("input_groups must contain at least one group.")
 
+        n_data = len(data_indices)
+
         for group in input_groups:
-            if len(group) != 4:
-                raise ValueError(f"Each input group must have length 4, got {group}")
+            if len(group) != n_data:
+                raise ValueError(
+                    f"Each input group must have length {n_data}, got {group}"
+                )
 
         self.input_groups = [list(group) for group in input_groups]
 
@@ -138,6 +160,18 @@ class DNPULayer(nn.Module):
             )
             for _ in self.input_groups
         ])
+
+    @property
+    def n_units(self):
+        return len(self.units)
+
+    @property
+    def n_data(self):
+        return self.units[0].n_data
+
+    @property
+    def n_control(self):
+        return self.units[0].n_control
 
     @torch.no_grad()
     def clip_controls_(self):
@@ -156,7 +190,7 @@ class DNPULayer(nn.Module):
 
         for group, unit in zip(self.input_groups, self.units):
             x_group = x[:, group]
-            y = unit(x_group)  # (batch, 1)
+            y = unit(x_group)
             outputs.append(y)
 
         return torch.cat(outputs, dim=1)
