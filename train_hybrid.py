@@ -8,7 +8,8 @@ from brainspy.processors.processor import Processor
 
 from data import make_bars_stripes, pixels_to_voltages
 from models import PlanarDNPUEncoderDigitalDecoder
-from visualize import plot_reconstructions
+#from visualize import plot_reconstructions
+from visualize import save_reconstruction_cases, plot_reconstruction_sample
 
 
 def make_processor():
@@ -191,17 +192,41 @@ def main():
     for i, unit in enumerate(model.encoder.units):
         print(f"  unit {i}: {unit.control_voltages.detach().cpu().numpy()}")
 
-    fig_path = plot_reconstructions(
+#    fig_path = plot_reconstructions(
+#        model=model,
+#        x_input=x_volt,
+#        x_target=x_pixels,
+#        n=args.image_size,
+#        max_patterns=x_pixels.shape[0],
+#        save_path=results_dir / f"{run_name}_reconstructions.png",
+#    )
+
+#    print("\nSaved reconstruction figure:", fig_path)
+
+    cases_dir = results_dir / f"{run_name}_cases"
+    saved_cases = save_reconstruction_cases(
         model=model,
         x_input=x_volt,
         x_target=x_pixels,
         n=args.image_size,
-        max_patterns=x_pixels.shape[0],
-        save_path=results_dir / f"{run_name}_reconstructions.png",
+        out_dir=cases_dir,
+        prefix=run_name,
     )
 
-    print("\nSaved reconstruction figure:", fig_path)
+    sample_path, sample_indices = plot_reconstruction_sample(
+        model=model,
+        x_input=x_volt,
+        x_target=x_pixels,
+        n=args.image_size,
+        num_examples=8,
+        seed=args.seed,
+        save_path=results_dir / f"{run_name}_sample.png",
+    )
 
+    print("\nSaved individual reconstruction cases:", cases_dir)
+    print("Number of case files:", len(saved_cases))
+    print("Saved sample figure:", sample_path)
+    print("Sample indices:", sample_indices)
 
 if __name__ == "__main__":
     main()
