@@ -58,6 +58,15 @@ def parse_args():
     parser.add_argument("--image-size", type=int, default=4)
     parser.add_argument("--n-data", type=int, default=4)
     parser.add_argument("--n-control", type=int, default=3)
+    
+    parser.add_argument(
+        "--latent-dim",
+        type=int,
+        default=None,
+        help="Compressed digital latent dimension after DNPU readouts. "
+             "Default: no compression.",
+    )
+    
     parser.add_argument(
         "--group-type",
         type=str,
@@ -110,6 +119,7 @@ def main():
         image_size=args.image_size,
         n_data=args.n_data,
         n_control=args.n_control,
+        latent_dim=args.latent_dim,
         group_type=args.group_type,
         init="center",
         freeze_encoder=False,
@@ -128,6 +138,7 @@ def main():
     print(f"  n_data:       {args.n_data}")
     print(f"  n_control:    {args.n_control}")
     print(f"  group_type:   {args.group_type}")
+    print(f"  raw_latent_dim:{model.raw_latent_dim}")
     print(f"  latent_dim:   {model.latent_dim}")
     print(f"  epochs:       {args.epochs}")
     print(f"  lr:           {args.lr}")
@@ -138,13 +149,15 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         logits, z = model(x_volt)
+        z_raw = model.last_z_raw
 
         loss_recon = F.binary_cross_entropy_with_logits(
             logits,
             x_pixels,
         )
 
-        z_penalty = torch.relu(z.abs() - args.z0).pow(2).mean()
+        #z_penalty = torch.relu(z.abs() - args.z0).pow(2).mean()
+        z_penalty = torch.relu(z_raw.abs() - args.z0).pow(2).mean()
         loss = loss_recon + args.lambda_z * z_penalty
 
         optimizer.zero_grad()
@@ -157,7 +170,11 @@ def main():
             z_mean = z.detach().mean().item()
             z_std = z.detach().std().item()
             z_abs_max = z.detach().abs().max().item()
-
+            
+            z_raw_mean = z_raw.detach().mean().item()
+            z_raw_std = z_raw.detach().std().item()
+            z_raw_abs_max = z_raw.detach().abs().max().item()
+            
             print(
                 f"epoch {epoch:5d} | "
                 f"loss {loss.item():.6f} | "
@@ -165,8 +182,11 @@ def main():
                 f"z_pen {z_penalty.item():.6f} | "
                 f"pixel_acc {pixel_acc:.3f} | "
                 f"pattern_acc {pattern_acc:.3f} | "
+                f"z_raw_mean {z_raw_mean:.3f} | "
+                f"z_raw_std {z_raw_std:.3f} | "
+                f"z_raw_abs_max {z_raw_abs_max:.3f} | "
                 f"z_mean {z_mean:.3f} | "
-                f"z_std {z_std:.3f} | "
+                f"z_std {z_std:.3f}"
                 f"z_abs_max {z_abs_max:.3f}"
             )
 
@@ -181,6 +201,7 @@ def main():
             "args": vars(args),
             "run_name": run_name,
             "input_groups": model.input_groups,
+            "raw_latent_dim": model.raw_latent_dim,
             "latent_dim": model.latent_dim,
         },
         checkpoint_path,

@@ -133,6 +133,7 @@ class PlanarDNPUEncoderDigitalDecoder(nn.Module):
         group_type="auto",
         init="center",
         freeze_encoder=False,
+        latent_dim=None,
     ):
         super().__init__()
 
@@ -154,8 +155,19 @@ class PlanarDNPUEncoderDigitalDecoder(nn.Module):
                 group_type=group_type,
             )
 
+        #self.input_groups = input_groups
+        #self.latent_dim = len(input_groups)
+        
         self.input_groups = input_groups
-        self.latent_dim = len(input_groups)
+        self.raw_latent_dim = len(input_groups)
+
+        if latent_dim is None:
+            latent_dim = self.raw_latent_dim
+
+        if latent_dim <= 0:
+            raise ValueError("latent_dim must be positive.")
+
+        self.latent_dim = latent_dim
 
         self.encoder = DNPULayer(
             processor=processor,
@@ -165,6 +177,11 @@ class PlanarDNPUEncoderDigitalDecoder(nn.Module):
             control_indices=control_indices,
             init=init,
         )
+        
+        if self.latent_dim == self.raw_latent_dim:
+            self.bottleneck = nn.Identity()
+        else:
+            self.bottleneck = nn.Linear(self.raw_latent_dim, self.latent_dim)
 
         self.decoder = nn.Linear(self.latent_dim, self.input_dim)
 
@@ -176,15 +193,34 @@ class PlanarDNPUEncoderDigitalDecoder(nn.Module):
     def clip_controls_(self):
         self.encoder.clip_controls_()
 
+    #def forward(self, x):
+    #    """
+    #    x: tensor of shape (batch, image_size*image_size), in voltage units.
+
+    #    Returns:
+    #        logits: tensor of shape (batch, image_size*image_size)
+    #        z:      tensor of shape (batch, latent_dim)
+    #    """
+    #    z = self.encoder(x)
+    #    logits = self.decoder(z)
+    #    return logits, z
+        
     def forward(self, x):
         """
         x: tensor of shape (batch, image_size*image_size), in voltage units.
 
         Returns:
             logits: tensor of shape (batch, image_size*image_size)
-            z:      tensor of shape (batch, latent_dim)
+            z:      compressed latent tensor of shape (batch, latent_dim)
+
+        The raw physical DNPU readouts are stored as self.last_z_raw for diagnostics
+        and hardware-aware penalties.
         """
-        z = self.encoder(x)
+        z_raw = self.encoder(x)
+        z = self.bottleneck(z_raw)
+
+        self.last_z_raw = z_raw
+
         logits = self.decoder(z)
         return logits, z
 
