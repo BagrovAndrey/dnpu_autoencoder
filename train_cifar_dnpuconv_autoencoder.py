@@ -265,6 +265,25 @@ def freeze_dnpu_parameters(model):
 
     return frozen_trainable
 
+def freeze_encoder_parameters(model):
+    frozen_trainable = 0
+
+    encoder_prefixes = (
+        "dnpu_conv1",
+        "norm1",
+        "encoder2",
+        "dnpu_conv2",
+        "norm2",
+        "to_latent",
+    )
+
+    for name, param in model.named_parameters():
+        if name.startswith(encoder_prefixes) and param.requires_grad:
+            frozen_trainable += param.numel()
+            param.requires_grad = False
+
+    return frozen_trainable
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -312,6 +331,15 @@ def parse_args():
         help="Freeze DNPUConv trainable control voltages. Digital layers remain trainable.",
     )
 
+    parser.add_argument(
+        "--freeze-encoder",
+        action="store_true",
+        help=(
+            "Freeze the full encoder up to the latent representation. "
+            "The decoder remains trainable."
+        ),
+    )
+
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
 
@@ -320,6 +348,9 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    if args.freeze_dnpu and args.freeze_encoder:
+        raise ValueError("Use either --freeze-dnpu or --freeze-encoder, not both.")
 
     torch.manual_seed(args.seed)
 
@@ -376,10 +407,21 @@ def main():
     ).to(device)
 
     frozen_dnpu_params = 0
+    frozen_encoder_params = 0
+
     if args.freeze_dnpu:
         frozen_dnpu_params = freeze_dnpu_parameters(model)
 
+    if args.freeze_encoder:
+        frozen_encoder_params = freeze_encoder_parameters(model)
+
     total_params, trainable_params = count_parameters(model)
+
+    #frozen_dnpu_params = 0
+    #if args.freeze_dnpu:
+    #    frozen_dnpu_params = freeze_dnpu_parameters(model)
+
+    #total_params, trainable_params = count_parameters(model)
 
     optimizer = torch.optim.Adam(
         [p for p in model.parameters() if p.requires_grad],
@@ -399,6 +441,8 @@ def main():
     print(f"  loss:             {args.loss}")
     print(f"  freeze_dnpu:      {args.freeze_dnpu}")
     print(f"  frozen DNPU pars: {frozen_dnpu_params}")
+    print(f"  freeze_encoder:   {args.freeze_encoder}")
+    print(f"  frozen enc pars:  {frozen_encoder_params}")
     print(f"  total params:     {total_params}")
     print(f"  trainable params: {trainable_params}")
     print(f"  device:           {device}")
