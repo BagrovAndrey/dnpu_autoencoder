@@ -34,7 +34,7 @@ def make_processor():
 
 class DNPUConvCIFARAutoencoder(nn.Module):
     """
-    Minimal CIFAR autoencoder.
+    CIFAR grayscale autoencoder with selectable DNPUConv encoder.
 
     Input:
         grayscale CIFAR image in [0, 1], shape (B, 1, 32, 32)
@@ -42,23 +42,56 @@ class DNPUConvCIFARAutoencoder(nn.Module):
     DNPU input:
         shifted to voltage range [-0.5, 0.5]
 
-    Architecture:
-        DNPUConv2d 1x32x32 -> conv_channels x16x16
-        BatchNorm/ReLU
-        digital downsample
-        digital bottleneck
-        digital decoder
+    Encoder modes:
+        hybrid:
+            DNPUConv2d 1x32x32 -> C1 x16x16
+            BatchNorm/ReLU
+            digital Conv2d C1 x16x16 -> 16 x8x8
+            BatchNorm/ReLU
+
+        dnpu2:
+            DNPUConv2d 1x32x32 -> C1 x16x16
+            BatchNorm/ReLU
+            DNPUConv2d C1 x16x16 -> C2 x8x8
+            BatchNorm/ReLU
+
+    Latent modes:
+        raw:
+            z = flatten(encoder_output)
+
+        linear:
+            z_raw = flatten(encoder_output)
+            z = Linear(z_raw_dim -> latent_dim)
+
+    Decoder:
+        digital Linear(z_dim -> 16*8*8)
+        digital ConvTranspose2d decoder
     """
 
     def __init__(
         self,
         processor,
+        encoder_type="hybrid",
         conv_channels=8,
+        conv2_channels=1,
+        latent_mode="linear",
         latent_dim=64,
     ):
         super().__init__()
 
-        self.dnpu_conv = DNPUConv2d(
+        if encoder_type not in ["hybrid", "dnpu2"]:
+            raise ValueError(f"Unknown encoder_type: {encoder_type}")
+
+        if latent_mode not in ["raw", "linear"]:
+            raise ValueError(f"Unknown latent_mode: {latent_mode}")
+
+        self.encoder_type = encoder_type
+        self.conv_channels = conv_channels
+        self.conv2_channels = conv2_channels
+        self.latent_mode = latent_mode
+        self.requested_latent_dim = latent_dim
+
+        self.dnpu_conv1 = DNPUConv2d(
             processor=processor,
             data_input_indices=[[0, 1, 2, 3]],
             in_channels=1,
@@ -69,15 +102,40 @@ class DNPUConvCIFARAutoencoder(nn.Module):
             forward_pass_type="vec",
         )
 
-        self.encoder = nn.Sequential(
-            nn.BatchNorm2d(conv_channels),
-            nn.ReLU(),
-            nn.Conv2d(conv_channels, 16, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-        )
+        self.norm1 = nn.BatchNorm2d(conv_channels)
 
-        self.to_latent = nn.Linear(16 * 8 * 8, latent_dim)
-        self.from_latent = nn.Linear(latent_dim, 16 * 8 * 8)
+        if encoder_type == "hybrid":
+            self.encoder2 = nn.Sequential(
+                nn.Conv2d(conv_channels, 16, kernel_size=3, stride=2, padding=1),
+                nn.BatchNorm2d(16),
+                nn.ReLU(),
+            )
+            self.raw_channels = 16
+
+        else:
+            self.dnpu_conv2 = DNPUConv2d(
+                processor=processor,
+                data_input_indices=[[0, 1, 2, 3]],
+                in_channels=conv_channels,
+                out_channels=conv2_channels,
+                kernel_size=2,
+                stride=2,
+                padding=0,
+                forward_pass_type="vec",
+            )
+            self.norm2 = nn.BatchNorm2d(conv2_channels)
+            self.raw_channels = conv2_channels
+
+        self.raw_latent_dim = self.raw_channels * 8 * 8
+
+        if latent_mode == "raw":
+            self.to_latent = nn.Identity()
+            self.latent_dim = self.raw_latent_dim
+        else:
+            self.to_latent = nn.Linear(self.raw_latent_dim, latent_dim)
+            self.latent_dim = latent_dim
+
+        self.from_latent = nn.Linear(self.latent_dim, 16 * 8 * 8)
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1),
@@ -85,12 +143,25 @@ class DNPUConvCIFARAutoencoder(nn.Module):
             nn.ConvTranspose2d(8, 1, kernel_size=4, stride=2, padding=1),
         )
 
-    def forward(self, x):
+    def encode_features(self, x):
         # CIFAR image [0,1] -> DNPU voltage range [-0.5,0.5]
         x_voltage = x - 0.5
 
-        h = self.dnpu_conv(x_voltage)
-        h = self.encoder(h)
+        h = self.dnpu_conv1(x_voltage)
+        h = self.norm1(h)
+        h = F.relu(h)
+
+        if self.encoder_type == "hybrid":
+            h = self.encoder2(h)
+        else:
+            h = self.dnpu_conv2(h)
+            h = self.norm2(h)
+            h = F.relu(h)
+
+        return h
+
+    def forward(self, x):
+        h = self.encode_features(x)
 
         h_flat = h.flatten(start_dim=1)
         z = self.to_latent(h_flat)
@@ -197,7 +268,26 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=0.0)
 
+    parser.add_argument(
+        "--encoder-type",
+        choices=["hybrid", "dnpu2"],
+        default="hybrid",
+        help="Encoder type: hybrid = DNPUConv + digital Conv2d; dnpu2 = two DNPUConv stages.",
+    )
     parser.add_argument("--conv-channels", type=int, default=8)
+    parser.add_argument(
+        "--conv2-channels",
+        type=int,
+        default=1,
+        help="Number of output channels in the second DNPUConv stage. Used only for --encoder-type dnpu2.",
+    )
+
+    parser.add_argument(
+        "--latent-mode",
+        choices=["raw", "linear"],
+        default="linear",
+        help="raw = use flattened encoder output as latent; linear = apply Linear(raw_dim -> latent_dim).",
+    )
     parser.add_argument("--latent-dim", type=int, default=64)
 
     parser.add_argument(
@@ -263,7 +353,10 @@ def main():
 
     model = DNPUConvCIFARAutoencoder(
         processor=processor,
+        encoder_type=args.encoder_type,
         conv_channels=args.conv_channels,
+        conv2_channels=args.conv2_channels,
+        latent_mode=args.latent_mode,
         latent_dim=args.latent_dim,
     ).to(device)
 
@@ -278,8 +371,12 @@ def main():
     print("DNPUConv CIFAR autoencoder")
     print(f"  subset_size:      {args.subset_size}")
     print(f"  batch_size:       {args.batch_size}")
+    print(f"  encoder_type:     {args.encoder_type}")
     print(f"  conv_channels:    {args.conv_channels}")
-    print(f"  latent_dim:       {args.latent_dim}")
+    print(f"  conv2_channels:   {args.conv2_channels}")
+    print(f"  latent_mode:      {args.latent_mode}")
+    print(f"  latent_dim:       {model.latent_dim}")
+    print(f"  raw_latent_dim:   {model.raw_latent_dim}")
     print(f"  loss:             {args.loss}")
     print(f"  total params:     {total_params}")
     print(f"  trainable params: {trainable_params}")
@@ -340,6 +437,8 @@ def main():
         {
             "model_state_dict": model.state_dict(),
             "args": vars(args),
+            "raw_latent_dim": model.raw_latent_dim,
+            "latent_dim": model.latent_dim,
         },
         checkpoint_path,
     )
