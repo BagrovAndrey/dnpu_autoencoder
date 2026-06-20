@@ -103,13 +103,33 @@ class DNPUConvCIFARAutoencoder(nn.Module):
         return logits, z
 
 
+def reconstruction_loss(logits, x, loss_type):
+    recon = torch.sigmoid(logits)
+
+    if loss_type == "bce":
+        return F.binary_cross_entropy_with_logits(logits, x)
+
+    if loss_type == "mse":
+        return F.mse_loss(recon, x)
+
+    if loss_type == "l1":
+        return F.l1_loss(recon, x)
+
+    if loss_type == "bce_l1":
+        return F.binary_cross_entropy_with_logits(logits, x) + F.l1_loss(recon, x)
+
+    raise ValueError(f"Unknown loss type: {loss_type}")
+
+
 @torch.no_grad()
-def evaluate(model, loader, device, max_batches=None):
+def evaluate(model, loader, device, loss_type, max_batches=None):
     model.eval()
 
     total_loss = 0.0
+    total_bce = 0.0
+    total_mse = 0.0
+    total_mae = 0.0
     total_pixels = 0
-    total_abs = 0.0
 
     for batch_idx, (x, _) in enumerate(loader):
         if max_batches is not None and batch_idx >= max_batches:
@@ -118,18 +138,24 @@ def evaluate(model, loader, device, max_batches=None):
         x = x.to(device)
 
         logits, _ = model(x)
-        loss = F.binary_cross_entropy_with_logits(logits, x, reduction="sum")
-
         recon = torch.sigmoid(logits)
-        abs_err = (recon - x).abs().sum()
 
-        total_loss += loss.item()
-        total_abs += abs_err.item()
+        loss = reconstruction_loss(logits, x, loss_type)
+        bce = F.binary_cross_entropy_with_logits(logits, x, reduction="sum")
+        mse = F.mse_loss(recon, x, reduction="sum")
+        mae = F.l1_loss(recon, x, reduction="sum")
+
+        total_loss += loss.item() * x.numel()
+        total_bce += bce.item()
+        total_mse += mse.item()
+        total_mae += mae.item()
         total_pixels += x.numel()
 
     return {
-        "bce_per_pixel": total_loss / total_pixels,
-        "mae_per_pixel": total_abs / total_pixels,
+        "loss_per_pixel": total_loss / total_pixels,
+        "bce_per_pixel": total_bce / total_pixels,
+        "mse_per_pixel": total_mse / total_pixels,
+        "mae_per_pixel": total_mae / total_pixels,
     }
 
 
@@ -173,6 +199,13 @@ def parse_args():
 
     parser.add_argument("--conv-channels", type=int, default=8)
     parser.add_argument("--latent-dim", type=int, default=64)
+
+    parser.add_argument(
+        "--loss",
+        choices=["bce", "mse", "l1", "bce_l1"],
+        default="bce",
+        help="Reconstruction loss used for optimization.",
+    )
 
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
@@ -247,6 +280,7 @@ def main():
     print(f"  batch_size:       {args.batch_size}")
     print(f"  conv_channels:    {args.conv_channels}")
     print(f"  latent_dim:       {args.latent_dim}")
+    print(f"  loss:             {args.loss}")
     print(f"  total params:     {total_params}")
     print(f"  trainable params: {trainable_params}")
     print(f"  device:           {device}")
@@ -262,7 +296,7 @@ def main():
             x = x.to(device)
 
             logits, _ = model(x)
-            loss = F.binary_cross_entropy_with_logits(logits, x)
+            loss = reconstruction_loss(logits, x, args.loss)
 
             optimizer.zero_grad()
             loss.backward()
@@ -271,14 +305,22 @@ def main():
             running_loss += loss.item() * x.numel()
             running_pixels += x.numel()
 
-        train_bce = running_loss / running_pixels
+        train_loss = running_loss / running_pixels
 
-        test_metrics = evaluate(model, test_loader, device, max_batches=20)
+        test_metrics = evaluate(
+            model,
+            test_loader,
+            device,
+            loss_type=args.loss,
+            max_batches=20,
+        )
 
         print(
             f"epoch {epoch:4d} | "
-            f"train_bce {train_bce:.6f} | "
+            f"train_loss {train_loss:.6f} | "
+            f"test_loss {test_metrics['loss_per_pixel']:.6f} | "
             f"test_bce {test_metrics['bce_per_pixel']:.6f} | "
+            f"test_mse {test_metrics['mse_per_pixel']:.6f} | "
             f"test_mae {test_metrics['mae_per_pixel']:.6f}"
         )
 
