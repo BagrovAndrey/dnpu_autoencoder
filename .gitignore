@@ -7,3 +7,7 @@ surrogate_model.pt
 
 .ipynb_checkpoints/
 .DS_Store
+
+data_cifar/
+results_cifar/
+results_cifar_*/
