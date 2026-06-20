@@ -255,6 +255,15 @@ def count_parameters(model):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total, trainable
 
+def freeze_dnpu_parameters(model):
+    frozen_trainable = 0
+
+    for name, param in model.named_parameters():
+        if "dnpu_conv" in name and param.requires_grad:
+            frozen_trainable += param.numel()
+            param.requires_grad = False
+
+    return frozen_trainable
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -295,6 +304,12 @@ def parse_args():
         choices=["bce", "mse", "l1", "bce_l1"],
         default="bce",
         help="Reconstruction loss used for optimization.",
+    )
+
+    parser.add_argument(
+        "--freeze-dnpu",
+        action="store_true",
+        help="Freeze DNPUConv trainable control voltages. Digital layers remain trainable.",
     )
 
     parser.add_argument("--seed", type=int, default=0)
@@ -360,6 +375,10 @@ def main():
         latent_dim=args.latent_dim,
     ).to(device)
 
+    frozen_dnpu_params = 0
+    if args.freeze_dnpu:
+        frozen_dnpu_params = freeze_dnpu_parameters(model)
+
     total_params, trainable_params = count_parameters(model)
 
     optimizer = torch.optim.Adam(
@@ -378,6 +397,8 @@ def main():
     print(f"  latent_dim:       {model.latent_dim}")
     print(f"  raw_latent_dim:   {model.raw_latent_dim}")
     print(f"  loss:             {args.loss}")
+    print(f"  freeze_dnpu:      {args.freeze_dnpu}")
+    print(f"  frozen DNPU pars: {frozen_dnpu_params}")
     print(f"  total params:     {total_params}")
     print(f"  trainable params: {trainable_params}")
     print(f"  device:           {device}")
