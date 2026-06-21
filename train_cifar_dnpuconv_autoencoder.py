@@ -284,6 +284,18 @@ def freeze_encoder_parameters(model):
 
     return frozen_trainable
 
+def freeze_batchnorm_parameters(model):
+    frozen_trainable = 0
+
+    for module in model.modules():
+        if isinstance(module, nn.BatchNorm2d):
+            for param in module.parameters():
+                if param.requires_grad:
+                    frozen_trainable += param.numel()
+                    param.requires_grad = False
+
+    return frozen_trainable
+
 def parse_args():
     parser = argparse.ArgumentParser()
 
@@ -340,6 +352,12 @@ def parse_args():
         ),
     )
 
+    parser.add_argument(
+        "--freeze-bn",
+        action="store_true",
+        help="Freeze BatchNorm affine parameters while keeping DNPU controls trainable.",
+    )
+
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
 
@@ -349,8 +367,13 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if args.freeze_dnpu and args.freeze_encoder:
-        raise ValueError("Use either --freeze-dnpu or --freeze-encoder, not both.")
+    #if args.freeze_dnpu and args.freeze_encoder:
+    #    raise ValueError("Use either --freeze-dnpu or --freeze-encoder, not both.")
+
+    if args.freeze_encoder and (args.freeze_dnpu or args.freeze_bn):
+        raise ValueError(
+            "Use --freeze-encoder alone, not together with --freeze-dnpu or --freeze-bn."
+        )
 
     torch.manual_seed(args.seed)
 
@@ -407,10 +430,14 @@ def main():
     ).to(device)
 
     frozen_dnpu_params = 0
+    frozen_bn_params = 0
     frozen_encoder_params = 0
 
     if args.freeze_dnpu:
         frozen_dnpu_params = freeze_dnpu_parameters(model)
+
+    if args.freeze_bn:
+        frozen_bn_params = freeze_batchnorm_parameters(model)
 
     if args.freeze_encoder:
         frozen_encoder_params = freeze_encoder_parameters(model)
@@ -441,6 +468,8 @@ def main():
     print(f"  loss:             {args.loss}")
     print(f"  freeze_dnpu:      {args.freeze_dnpu}")
     print(f"  frozen DNPU pars: {frozen_dnpu_params}")
+    print(f"  freeze_bn:        {args.freeze_bn}")
+    print(f"  frozen BN pars:   {frozen_bn_params}")
     print(f"  freeze_encoder:   {args.freeze_encoder}")
     print(f"  frozen enc pars:  {frozen_encoder_params}")
     print(f"  total params:     {total_params}")
