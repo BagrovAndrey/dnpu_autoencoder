@@ -1,14 +1,11 @@
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
-results/
 surrogate_model.pt
+data_cifar/
+results*/
 
 .ipynb_checkpoints/
 .DS_Store
-
-data_cifar/
-results_cifar/
-results_cifar_*/
-results_fixed_*/
