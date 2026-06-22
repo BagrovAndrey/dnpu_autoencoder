@@ -11,3 +11,4 @@ surrogate_model.pt
 data_cifar/
 results_cifar/
 results_cifar_*/
+results_fixed_*/
