@@ -1,160 +1,36 @@
+"""Fixed-decoder hierarchy experiments and oracle-z sanity check.
+
+The oracle optimizes latent vectors directly to measure the ceiling imposed by
+the frozen random digital decoder, independently of encoder quality.
+"""
+
 import argparse
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
-
-import torchvision
-from torchvision import transforms
 from torchvision.utils import make_grid, save_image
 
-from train_cifar_dnpu_stack_autoencoder import (
-    make_processor,
-    parse_channel_list,
+from dnpu_ae.cifar_data import make_grayscale_cifar_loaders
+from dnpu_ae.cifar_models import (
+    DigitalEncoderFixedDecoder,
     DNPUStackCIFARAutoencoder,
-    reconstruction_loss,
+    FixedRandomDecoder,
 )
-
-
-class FixedRandomDecoder(nn.Module):
-    def __init__(self, latent_dim):
-        super().__init__()
-
-        self.latent_dim = latent_dim
-
-        self.from_latent = nn.Linear(latent_dim, 16 * 8 * 8)
-
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(8, 1, kernel_size=4, stride=2, padding=1),
-        )
-
-    def forward(self, z):
-        h = self.from_latent(z)
-        h = h.reshape(z.shape[0], 16, 8, 8)
-        logits = self.decoder(h)
-        return logits
-
-
-class DigitalEncoderFixedDecoder(nn.Module):
-    def __init__(self, latent_dim):
-        super().__init__()
-
-        self.latent_dim = latent_dim
-
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(16, 16, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-        )
-
-        self.to_latent = nn.Linear(16 * 8 * 8, latent_dim)
-        self.fixed_decoder = FixedRandomDecoder(latent_dim)
-
-    def forward(self, x):
-        h = self.encoder(x)
-        z = self.to_latent(h.flatten(start_dim=1))
-        logits = self.fixed_decoder(z)
-        return logits, z
-
-
-def reset_module_parameters(module, seed):
-    state = torch.random.get_rng_state()
-    torch.manual_seed(seed)
-
-    for m in module.modules():
-        if hasattr(m, "reset_parameters"):
-            m.reset_parameters()
-
-    torch.random.set_rng_state(state)
-
-
-def freeze_module(module):
-    frozen_trainable = 0
-
-    for p in module.parameters():
-        if p.requires_grad:
-            frozen_trainable += p.numel()
-            p.requires_grad = False
-
-    return frozen_trainable
-
-
-def freeze_dnpu_decoder(model):
-    frozen_trainable = 0
-
-    for name, p in model.named_parameters():
-        if name.startswith("from_latent") or name.startswith("decoder"):
-            if p.requires_grad:
-                frozen_trainable += p.numel()
-                p.requires_grad = False
-
-    return frozen_trainable
-
-
-def reinitialize_dnpu_decoder(model, decoder_seed):
-    state = torch.random.get_rng_state()
-    torch.manual_seed(decoder_seed)
-
-    for m in model.from_latent.modules():
-        if hasattr(m, "reset_parameters"):
-            m.reset_parameters()
-
-    for m in model.decoder.modules():
-        if hasattr(m, "reset_parameters"):
-            m.reset_parameters()
-
-    torch.random.set_rng_state(state)
-
-
-def count_parameters(model):
-    total = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total, trainable
-
-
-@torch.no_grad()
-def evaluate(model, loader, device, loss_type, max_batches=None):
-    model.eval()
-
-    total_loss = 0.0
-    total_bce = 0.0
-    total_mse = 0.0
-    total_mae = 0.0
-    total_pixels = 0
-
-    for batch_idx, (x, _) in enumerate(loader):
-        if max_batches is not None and batch_idx >= max_batches:
-            break
-
-        x = x.to(device)
-
-        logits, _ = model(x)
-        recon = torch.sigmoid(logits)
-
-        loss = reconstruction_loss(logits, x, loss_type)
-        bce = F.binary_cross_entropy_with_logits(logits, x, reduction="sum")
-        mse = F.mse_loss(recon, x, reduction="sum")
-        mae = F.l1_loss(recon, x, reduction="sum")
-
-        total_loss += loss.item() * x.numel()
-        total_bce += bce.item()
-        total_mse += mse.item()
-        total_mae += mae.item()
-        total_pixels += x.numel()
-
-    return {
-        "loss_per_pixel": total_loss / total_pixels,
-        "bce_per_pixel": total_bce / total_pixels,
-        "mse_per_pixel": total_mse / total_pixels,
-        "mae_per_pixel": total_mae / total_pixels,
-    }
+from dnpu_ae.model_utils import (
+    count_parameters,
+    freeze_dnpu_decoder,
+    freeze_module,
+    parse_channel_list,
+    reinitialize_dnpu_decoder,
+    reset_module_parameters,
+)
+from dnpu_ae.processor import make_processor
+from dnpu_ae.reconstruction import (
+    evaluate_reconstruction as evaluate,
+    reconstruction_loss,
+    save_reconstruction_sample,
+)
 
 
 @torch.no_grad()
@@ -172,26 +48,6 @@ def oracle_batch_metrics(decoder, z, x):
     mae = F.l1_loss(recon, x, reduction="sum").item() / x.numel()
 
     return bce, mse, mae
-
-
-@torch.no_grad()
-def save_reconstruction_sample(model, loader, device, save_path, n=8):
-    model.eval()
-
-    x, _ = next(iter(loader))
-    x = x[:n].to(device)
-
-    logits, _ = model(x)
-    recon = torch.sigmoid(logits)
-
-    panel = torch.cat([x.cpu(), recon.cpu()], dim=0)
-    grid = make_grid(panel, nrow=n, padding=2)
-
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_image(grid, save_path)
-
-    return save_path
 
 
 def run_trainable_encoder(model, train_loader, test_loader, args, device, results_dir):
@@ -515,40 +371,12 @@ def main():
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    transform = transforms.Compose([
-        transforms.Grayscale(num_output_channels=1),
-        transforms.ToTensor(),
-    ])
-
-    train_full = torchvision.datasets.CIFAR10(
-        root=args.data_dir,
-        train=True,
-        download=True,
-        transform=transform,
-    )
-
-    test_full = torchvision.datasets.CIFAR10(
-        root=args.data_dir,
-        train=False,
-        download=True,
-        transform=transform,
-    )
-
-    train_subset = Subset(train_full, list(range(args.subset_size)))
-    test_subset = Subset(test_full, list(range(min(args.test_size, len(test_full)))))
-
-    train_loader = DataLoader(
-        train_subset,
+    train_loader, test_loader = make_grayscale_cifar_loaders(
+        data_dir=args.data_dir,
+        train_size=args.subset_size,
+        test_size=args.test_size,
         batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    test_loader = DataLoader(
-        test_subset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=0,
+        train_shuffle=True,
     )
 
     print("Fixed random decoder CIFAR hierarchy", flush=True)

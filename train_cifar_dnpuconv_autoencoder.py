@@ -2,299 +2,22 @@ import argparse
 from pathlib import Path
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
 
-import torchvision
-from torchvision import transforms
-from torchvision.utils import make_grid, save_image
+from dnpu_ae.cifar_data import make_grayscale_cifar_loaders
+from dnpu_ae.cifar_models import DNPUConvCIFARAutoencoder
+from dnpu_ae.model_utils import (
+    count_parameters,
+    freeze_batchnorm_parameters,
+    freeze_dnpu_parameters,
+    freeze_encoder_parameters,
+)
+from dnpu_ae.processor import make_processor
+from dnpu_ae.reconstruction import (
+    evaluate_reconstruction as evaluate,
+    reconstruction_loss,
+    save_reconstruction_sample,
+)
 
-from brainspy.processors.processor import Processor
-from brainspy.processors.modules.conv import DNPUConv2d
-
-
-def make_processor():
-    ckpt = torch.load(Path("surrogate_model.pt"), map_location="cpu")
-
-    processor = Processor(
-        configs={
-            "processor_type": "simulation",
-            "waveform": {
-                "plateau_length": 1,
-                "slope_length": 0,
-            },
-        },
-        info=ckpt["info"],
-        model_state_dict=ckpt["model_state_dict"],
-    )
-
-    return processor
-
-
-class DNPUConvCIFARAutoencoder(nn.Module):
-    """
-    CIFAR grayscale autoencoder with selectable DNPUConv encoder.
-
-    Input:
-        grayscale CIFAR image in [0, 1], shape (B, 1, 32, 32)
-
-    DNPU input:
-        shifted to voltage range [-0.5, 0.5]
-
-    Encoder modes:
-        hybrid:
-            DNPUConv2d 1x32x32 -> C1 x16x16
-            BatchNorm/ReLU
-            digital Conv2d C1 x16x16 -> 16 x8x8
-            BatchNorm/ReLU
-
-        dnpu2:
-            DNPUConv2d 1x32x32 -> C1 x16x16
-            BatchNorm/ReLU
-            DNPUConv2d C1 x16x16 -> C2 x8x8
-            BatchNorm/ReLU
-
-    Latent modes:
-        raw:
-            z = flatten(encoder_output)
-
-        linear:
-            z_raw = flatten(encoder_output)
-            z = Linear(z_raw_dim -> latent_dim)
-
-    Decoder:
-        digital Linear(z_dim -> 16*8*8)
-        digital ConvTranspose2d decoder
-    """
-
-    def __init__(
-        self,
-        processor,
-        encoder_type="hybrid",
-        conv_channels=8,
-        conv2_channels=1,
-        latent_mode="linear",
-        latent_dim=64,
-    ):
-        super().__init__()
-
-        if encoder_type not in ["hybrid", "dnpu2"]:
-            raise ValueError(f"Unknown encoder_type: {encoder_type}")
-
-        if latent_mode not in ["raw", "linear"]:
-            raise ValueError(f"Unknown latent_mode: {latent_mode}")
-
-        self.encoder_type = encoder_type
-        self.conv_channels = conv_channels
-        self.conv2_channels = conv2_channels
-        self.latent_mode = latent_mode
-        self.requested_latent_dim = latent_dim
-
-        self.dnpu_conv1 = DNPUConv2d(
-            processor=processor,
-            data_input_indices=[[0, 1, 2, 3]],
-            in_channels=1,
-            out_channels=conv_channels,
-            kernel_size=2,
-            stride=2,
-            padding=0,
-            forward_pass_type="vec",
-        )
-
-        self.norm1 = nn.BatchNorm2d(conv_channels)
-
-        if encoder_type == "hybrid":
-            self.encoder2 = nn.Sequential(
-                nn.Conv2d(conv_channels, 16, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm2d(16),
-                nn.ReLU(),
-            )
-            self.raw_channels = 16
-
-        else:
-            self.dnpu_conv2 = DNPUConv2d(
-                processor=processor,
-                data_input_indices=[[0, 1, 2, 3]],
-                in_channels=conv_channels,
-                out_channels=conv2_channels,
-                kernel_size=2,
-                stride=2,
-                padding=0,
-                forward_pass_type="vec",
-            )
-            self.norm2 = nn.BatchNorm2d(conv2_channels)
-            self.raw_channels = conv2_channels
-
-        self.raw_latent_dim = self.raw_channels * 8 * 8
-
-        if latent_mode == "raw":
-            self.to_latent = nn.Identity()
-            self.latent_dim = self.raw_latent_dim
-        else:
-            self.to_latent = nn.Linear(self.raw_latent_dim, latent_dim)
-            self.latent_dim = latent_dim
-
-        self.from_latent = nn.Linear(self.latent_dim, 16 * 8 * 8)
-
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(16, 8, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(8, 1, kernel_size=4, stride=2, padding=1),
-        )
-
-    def encode_features(self, x):
-        # CIFAR image [0,1] -> DNPU voltage range [-0.5,0.5]
-        x_voltage = x - 0.5
-
-        h = self.dnpu_conv1(x_voltage)
-        h = self.norm1(h)
-        h = F.relu(h)
-
-        if self.encoder_type == "hybrid":
-            h = self.encoder2(h)
-        else:
-            h = self.dnpu_conv2(h)
-            h = self.norm2(h)
-            h = F.relu(h)
-
-        return h
-
-    def forward(self, x):
-        h = self.encode_features(x)
-
-        h_flat = h.flatten(start_dim=1)
-        z = self.to_latent(h_flat)
-
-        h_dec = self.from_latent(z)
-        h_dec = h_dec.reshape(x.shape[0], 16, 8, 8)
-
-        logits = self.decoder(h_dec)
-
-        return logits, z
-
-
-def reconstruction_loss(logits, x, loss_type):
-    recon = torch.sigmoid(logits)
-
-    if loss_type == "bce":
-        return F.binary_cross_entropy_with_logits(logits, x)
-
-    if loss_type == "mse":
-        return F.mse_loss(recon, x)
-
-    if loss_type == "l1":
-        return F.l1_loss(recon, x)
-
-    if loss_type == "bce_l1":
-        return F.binary_cross_entropy_with_logits(logits, x) + F.l1_loss(recon, x)
-
-    raise ValueError(f"Unknown loss type: {loss_type}")
-
-
-@torch.no_grad()
-def evaluate(model, loader, device, loss_type, max_batches=None):
-    model.eval()
-
-    total_loss = 0.0
-    total_bce = 0.0
-    total_mse = 0.0
-    total_mae = 0.0
-    total_pixels = 0
-
-    for batch_idx, (x, _) in enumerate(loader):
-        if max_batches is not None and batch_idx >= max_batches:
-            break
-
-        x = x.to(device)
-
-        logits, _ = model(x)
-        recon = torch.sigmoid(logits)
-
-        loss = reconstruction_loss(logits, x, loss_type)
-        bce = F.binary_cross_entropy_with_logits(logits, x, reduction="sum")
-        mse = F.mse_loss(recon, x, reduction="sum")
-        mae = F.l1_loss(recon, x, reduction="sum")
-
-        total_loss += loss.item() * x.numel()
-        total_bce += bce.item()
-        total_mse += mse.item()
-        total_mae += mae.item()
-        total_pixels += x.numel()
-
-    return {
-        "loss_per_pixel": total_loss / total_pixels,
-        "bce_per_pixel": total_bce / total_pixels,
-        "mse_per_pixel": total_mse / total_pixels,
-        "mae_per_pixel": total_mae / total_pixels,
-    }
-
-
-@torch.no_grad()
-def save_reconstruction_sample(model, loader, device, save_path, n=8):
-    model.eval()
-
-    x, _ = next(iter(loader))
-    x = x[:n].to(device)
-
-    logits, _ = model(x)
-    recon = torch.sigmoid(logits)
-
-    panel = torch.cat([x.cpu(), recon.cpu()], dim=0)
-    grid = make_grid(panel, nrow=n, padding=2)
-
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_image(grid, save_path)
-
-    return save_path
-
-
-def count_parameters(model):
-    total = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total, trainable
-
-def freeze_dnpu_parameters(model):
-    frozen_trainable = 0
-
-    for name, param in model.named_parameters():
-        if "dnpu_conv" in name and param.requires_grad:
-            frozen_trainable += param.numel()
-            param.requires_grad = False
-
-    return frozen_trainable
-
-def freeze_encoder_parameters(model):
-    frozen_trainable = 0
-
-    encoder_prefixes = (
-        "dnpu_conv1",
-        "norm1",
-        "encoder2",
-        "dnpu_conv2",
-        "norm2",
-        "to_latent",
-    )
-
-    for name, param in model.named_parameters():
-        if name.startswith(encoder_prefixes) and param.requires_grad:
-            frozen_trainable += param.numel()
-            param.requires_grad = False
-
-    return frozen_trainable
-
-def freeze_batchnorm_parameters(model):
-    frozen_trainable = 0
-
-    for module in model.modules():
-        if isinstance(module, nn.BatchNorm2d):
-            for param in module.parameters():
-                if param.requires_grad:
-                    frozen_trainable += param.numel()
-                    param.requires_grad = False
-
-    return frozen_trainable
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -382,40 +105,12 @@ def main():
     results_dir = Path(args.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    transform = transforms.Compose([
-        transforms.Grayscale(num_output_channels=1),
-        transforms.ToTensor(),
-    ])
-
-    train_full = torchvision.datasets.CIFAR10(
-        root=args.data_dir,
-        train=True,
-        download=True,
-        transform=transform,
-    )
-
-    test_full = torchvision.datasets.CIFAR10(
-        root=args.data_dir,
-        train=False,
-        download=True,
-        transform=transform,
-    )
-
-    train_subset = Subset(train_full, list(range(args.subset_size)))
-    test_subset = Subset(test_full, list(range(min(args.subset_size, len(test_full)))))
-
-    train_loader = DataLoader(
-        train_subset,
+    train_loader, test_loader = make_grayscale_cifar_loaders(
+        data_dir=args.data_dir,
+        train_size=args.subset_size,
+        test_size=args.subset_size,
         batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    test_loader = DataLoader(
-        test_subset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=0,
+        train_shuffle=True,
     )
 
     processor = make_processor()
