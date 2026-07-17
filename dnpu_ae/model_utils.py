@@ -1,16 +1,18 @@
 """Small model-management helpers shared by CIFAR experiments."""
 
+from collections import OrderedDict
+
 import torch
 import torch.nn as nn
 
 
-def parse_channel_list(value):
-    """Parse comma-separated DNPU stage widths such as ``16,1`` or ``8,4,4``."""
+def parse_channel_list(value, arg_name="--dnpu-channels"):
+    """Parse comma-separated stage widths such as ``16,1`` or ``8,4,4``."""
     channels = [int(x.strip()) for x in value.split(",") if x.strip()]
     if len(channels) == 0:
-        raise ValueError("--dnpu-channels must contain at least one integer")
+        raise ValueError(f"{arg_name} must contain at least one integer")
     if any(c <= 0 for c in channels):
-        raise ValueError("--dnpu-channels must contain only positive integers")
+        raise ValueError(f"{arg_name} must contain only positive integers")
     return channels
 
 
@@ -24,7 +26,14 @@ def freeze_dnpu_parameters(model):
     """Freeze hardware-like DNPU control parameters, leaving digital layers trainable."""
     frozen_trainable = 0
     for name, param in model.named_parameters():
-        if ("dnpu_conv" in name or "dnpu_layers" in name) and param.requires_grad:
+        if (
+            "dnpu_conv" in name
+            or name.startswith("dnpu_layers")
+            or (
+                name.startswith("decoder.layers")
+                and getattr(model, "decoder_type", None) == "dnpu_zero_conv"
+            )
+        ) and param.requires_grad:
             frozen_trainable += param.numel()
             param.requires_grad = False
     return frozen_trainable
@@ -104,3 +113,38 @@ def reinitialize_dnpu_decoder(model, decoder_seed):
             child.reset_parameters()
     torch.random.set_rng_state(state)
 
+
+def count_parameter_breakdown(model, trainable_only=False):
+    """Return grouped parameter counts for encoder/decoder DNPU and BatchNorm parts."""
+    counts = OrderedDict(
+        [
+            ("encoder_dnpu_controls", 0),
+            ("decoder_dnpu_controls", 0),
+            ("encoder_batchnorm", 0),
+            ("decoder_batchnorm", 0),
+            ("other_digital", 0),
+        ]
+    )
+
+    for module_name, module in model.named_modules():
+        for _, param in module.named_parameters(recurse=False):
+            if trainable_only and not param.requires_grad:
+                continue
+
+            if (
+                module_name.startswith("decoder.layers")
+                and getattr(model, "decoder_type", None) == "dnpu_zero_conv"
+            ):
+                counts["decoder_dnpu_controls"] += param.numel()
+            elif module_name.startswith("dnpu_layers") or module_name.startswith("dnpu_conv"):
+                counts["encoder_dnpu_controls"] += param.numel()
+            elif isinstance(module, nn.BatchNorm2d):
+                if module_name.startswith("decoder."):
+                    counts["decoder_batchnorm"] += param.numel()
+                else:
+                    counts["encoder_batchnorm"] += param.numel()
+            else:
+                counts["other_digital"] += param.numel()
+
+    counts["total"] = sum(counts.values())
+    return counts

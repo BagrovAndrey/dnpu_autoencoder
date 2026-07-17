@@ -49,6 +49,11 @@ def build_encoder_from_checkpoint(checkpoint_path, device, random_init=False):
             dnpu_channels=dnpu_channels,
             latent_mode=get_arg(args_dict, "latent_mode", "raw"),
             latent_dim=int(get_arg(args_dict, "latent_dim", ckpt.get("latent_dim", 64))),
+            decoder_type=get_arg(args_dict, "decoder_type", ckpt.get("decoder_type", "transpose")),
+            decoder_channels=ckpt.get(
+                "decoder_channels",
+                parse_maybe_channel_list(get_arg(args_dict, "decoder_channels", "16,1")),
+            ),
         )
         model_kind = "stack"
     else:
@@ -81,4 +86,3 @@ def build_encoder_from_checkpoint(checkpoint_path, device, random_init=False):
     for param in model.parameters():
         param.requires_grad = False
     return model, ckpt, model_kind
-

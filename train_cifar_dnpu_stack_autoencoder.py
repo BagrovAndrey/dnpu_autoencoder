@@ -7,6 +7,7 @@ from dnpu_ae.cifar_data import make_grayscale_cifar_loaders
 from dnpu_ae.cifar_models import DNPUStackCIFARAutoencoder
 from dnpu_ae.model_utils import (
     count_parameters,
+    count_parameter_breakdown,
     freeze_batchnorm_parameters,
     freeze_dnpu_parameters,
     freeze_encoder_parameters,
@@ -43,6 +44,18 @@ def parse_args():
         type=str,
         default="16,1",
         help="Comma-separated DNPUConv output channels, e.g. 16,1 or 16,8,4.",
+    )
+    parser.add_argument(
+        "--decoder-type",
+        choices=["transpose", "zero_conv", "dnpu_zero_conv"],
+        default="transpose",
+        help="transpose = existing ConvTranspose2d decoder; zero_conv = digital zero-insertion decoder; dnpu_zero_conv = DNPU zero-insertion decoder.",
+    )
+    parser.add_argument(
+        "--decoder-channels",
+        type=str,
+        default="16,1",
+        help="Comma-separated zero-insertion decoder output channels, e.g. 16,1.",
     )
 
     parser.add_argument(
@@ -93,7 +106,11 @@ def main():
     if args.freeze_dnpu and args.freeze_bn:
         raise ValueError("Use either --freeze-dnpu or --freeze-bn, not both.")
 
-    dnpu_channels = parse_channel_list(args.dnpu_channels)
+    dnpu_channels = parse_channel_list(args.dnpu_channels, arg_name="--dnpu-channels")
+    decoder_channels = parse_channel_list(
+        args.decoder_channels,
+        arg_name="--decoder-channels",
+    )
 
     torch.manual_seed(args.seed)
 
@@ -118,6 +135,8 @@ def main():
         dnpu_channels=dnpu_channels,
         latent_mode=args.latent_mode,
         latent_dim=args.latent_dim,
+        decoder_type=args.decoder_type,
+        decoder_channels=decoder_channels,
     ).to(device)
 
     frozen_dnpu_params = 0
@@ -134,6 +153,8 @@ def main():
         frozen_encoder_params = freeze_encoder_parameters(model)
 
     total_params, trainable_params = count_parameters(model)
+    total_breakdown = count_parameter_breakdown(model, trainable_only=False)
+    trainable_breakdown = count_parameter_breakdown(model, trainable_only=True)
 
     optimizer = torch.optim.Adam(
         [p for p in model.parameters() if p.requires_grad],
@@ -150,6 +171,14 @@ def main():
     print(f"  latent_mode:       {args.latent_mode}")
     print(f"  latent_dim:        {model.latent_dim}")
     print(f"  raw_latent_dim:    {model.raw_latent_dim}")
+    print(f"  decoder_type:      {args.decoder_type}")
+    print(f"  decoder_channels:  {decoder_channels}")
+    print(f"  encoder_stages:    {' -> '.join(model.encoder_stage_shapes)}")
+    print(f"  decoder_stages:    {' -> '.join(model.decoder_stage_shapes)}")
+    print(
+        "  full_path:         "
+        + " -> ".join(["1 x 32 x 32"] + model.encoder_stage_shapes + model.decoder_stage_shapes[1:])
+    )
     print(f"  loss:              {args.loss}")
     print(f"  freeze_dnpu:       {args.freeze_dnpu}")
     print(f"  frozen DNPU pars:  {frozen_dnpu_params}")
@@ -159,6 +188,16 @@ def main():
     print(f"  frozen enc pars:   {frozen_encoder_params}")
     print(f"  total params:      {total_params}")
     print(f"  trainable params:  {trainable_params}")
+    print(f"  enc DNPU total:    {total_breakdown['encoder_dnpu_controls']}")
+    print(f"  dec DNPU total:    {total_breakdown['decoder_dnpu_controls']}")
+    print(f"  enc BN total:      {total_breakdown['encoder_batchnorm']}")
+    print(f"  dec BN total:      {total_breakdown['decoder_batchnorm']}")
+    print(f"  other digital:     {total_breakdown['other_digital']}")
+    print(f"  enc DNPU train:    {trainable_breakdown['encoder_dnpu_controls']}")
+    print(f"  dec DNPU train:    {trainable_breakdown['decoder_dnpu_controls']}")
+    print(f"  enc BN train:      {trainable_breakdown['encoder_batchnorm']}")
+    print(f"  dec BN train:      {trainable_breakdown['decoder_batchnorm']}")
+    print(f"  other dig train:   {trainable_breakdown['other_digital']}")
     print(f"  device:            {device}")
     print()
 
@@ -221,6 +260,8 @@ def main():
             "raw_spatial_size": model.raw_spatial_size,
             "raw_latent_dim": model.raw_latent_dim,
             "latent_dim": model.latent_dim,
+            "decoder_type": model.decoder_type,
+            "decoder_channels": model.decoder_channels,
         },
         checkpoint_path,
     )
