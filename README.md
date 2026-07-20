@@ -261,7 +261,59 @@ python train_cifar_dnpu_stack_autoencoder.py \
   --device cpu
 ```
 
-### 6. Freeze-encoder ablation
+### 6. Spatial-latent resolution check with digital mixing decoder
+
+This run tests whether block artifacts are tied to the coarse `1 x 8 x 8` latent grid by keeping only one stride-2 encoder stage:
+
+```text
+1 x 32 x 32 -> 1 x 16 x 16 -> 1 x 32 x 32
+```
+
+Command:
+
+```bash
+python3 train_cifar_dnpu_stack_autoencoder.py \
+  --data-dir data_cifar \
+  --results-dir results_cifar_zero_conv_mixing_1x16x16_raw256_l1 \
+  --subset-size 5000 \
+  --batch-size 32 \
+  --epochs 10 \
+  --encoder-type dnpu \
+  --dnpu-channels 1 \
+  --latent-mode raw \
+  --decoder-type zero_conv_mixing \
+  --decoder-channels 1 \
+  --loss l1 \
+  --device cpu
+```
+
+### 7. Spatial-latent resolution check with DNPU twin decoder
+
+The DNPU twin version of the same `1 x 16 x 16 -> 1 x 32 x 32` test is:
+
+```bash
+python3 train_cifar_dnpu_stack_autoencoder.py \
+  --data-dir data_cifar \
+  --results-dir results_cifar_dnpu_zero_conv_mixing_1x16x16_raw256_l1 \
+  --subset-size 5000 \
+  --batch-size 32 \
+  --epochs 10 \
+  --encoder-type dnpu \
+  --dnpu-channels 1 \
+  --latent-mode raw \
+  --decoder-type dnpu_zero_conv_mixing \
+  --decoder-channels 1 \
+  --loss l1 \
+  --device cpu
+```
+
+For comparison, the original `1 x 8 x 8 = 64` raw latent uses two encoder stages and therefore:
+
+```bash
+--dnpu-channels 16,1 --decoder-channels 16,1
+```
+
+### 8. Freeze-encoder ablation
 
 ```bash
 python train_cifar_dnpu_stack_autoencoder.py \
@@ -280,7 +332,7 @@ python train_cifar_dnpu_stack_autoencoder.py \
   --device cpu
 ```
 
-### 7. Fixed-decoder hierarchy experiments
+### 9. Fixed-decoder hierarchy experiments
 
 Frozen random DNPU encoder+decoder baseline:
 
@@ -336,7 +388,7 @@ python train_cifar_fixed_decoder.py \
   --device cpu
 ```
 
-### 8. Linear and MLP latent probes
+### 10. Linear and MLP latent probes
 
 Linear probe:
 
