@@ -125,15 +125,14 @@ def run_trainable_encoder(model, train_loader, test_loader, args, device, result
             flush=True,
         )
 
-        if epoch == 1 or epoch == args.epochs:
-            path = save_reconstruction_sample(
-                model=model,
-                loader=test_loader,
-                device=device,
-                save_path=results_dir / f"recon_epoch{epoch:04d}.png",
-                n=8,
-            )
-            print("  saved:", path, flush=True)
+        path = save_reconstruction_sample(
+            model=model,
+            loader=test_loader,
+            device=device,
+            save_path=results_dir / f"recon_epoch{epoch:04d}.png",
+            n=8,
+        )
+        print("  saved:", path, flush=True)
 
 
 def run_frozen_random(model, test_loader, args, device, results_dir):

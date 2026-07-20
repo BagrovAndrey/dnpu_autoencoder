@@ -245,15 +245,14 @@ def main():
             f"test_mae {test_metrics['mae_per_pixel']:.6f}"
         )
 
-        if epoch == 1 or epoch == args.epochs:
-            path = save_reconstruction_sample(
-                model=model,
-                loader=test_loader,
-                device=device,
-                save_path=results_dir / f"cifar_recon_epoch{epoch:04d}.png",
-                n=8,
-            )
-            print("  saved:", path)
+        path = save_reconstruction_sample(
+            model=model,
+            loader=test_loader,
+            device=device,
+            save_path=results_dir / f"cifar_recon_epoch{epoch:04d}.png",
+            n=8,
+        )
+        print("  saved:", path)
 
     checkpoint_path = results_dir / "cifar_dnpu_stack_autoencoder.pt"
 

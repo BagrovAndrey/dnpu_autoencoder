@@ -63,16 +63,27 @@ def evaluate_reconstruction(model, loader, device, loss_type, max_batches=None):
 def save_reconstruction_sample(model, loader, device, save_path, n=8):
     """Save a grid containing inputs followed by their reconstructions."""
     model.eval()
-    x, _ = next(iter(loader))
-    x = x[:n].to(device)
+    xs = []
+    collected = 0
+
+    for x, _ in loader:
+        take = min(n - collected, x.shape[0])
+        xs.append(x[:take])
+        collected += take
+        if collected >= n:
+            break
+
+    if not xs:
+        raise ValueError("Cannot save reconstruction sample from an empty loader.")
+
+    x = torch.cat(xs, dim=0).to(device)
     logits, _ = model(x)
     recon = torch.sigmoid(logits)
 
     panel = torch.cat([x.cpu(), recon.cpu()], dim=0)
-    grid = make_grid(panel, nrow=n, padding=2)
+    grid = make_grid(panel, nrow=x.shape[0], padding=2)
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     save_image(grid, save_path)
     return save_path
-
