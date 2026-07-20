@@ -13,7 +13,9 @@ The current CIFAR experiments study both physical encoders and DNPU-based decode
 - DNPUConv encoder stacks that compress `1 x 32 x 32` grayscale images into compact latent representations.
 - Raw physical bottlenecks versus an additional digital linear bottleneck.
 - Zero-insertion upsampling decoders built either from ordinary `Conv2d` or from BrainSpy `DNPUConv2d`.
+- Zero-insertion upsampling decoders with an additional same-resolution mixing convolution after each upsampling stage.
 - Freeze ablations for DNPU controls, BatchNorm parameters, and the full encoder.
+- Fixed-decoder hierarchy experiments, including frozen random decoders and oracle-`z` latent optimization.
 - Linear and MLP probes on frozen latent representations.
 
 The zero-insertion decoder is inspired by transposed convolution, but it is **not** mathematically identical to `ConvTranspose2d` for nonlinear DNPU maps. It upsamples by inserting zeros into the feature map and then applies ordinary convolutional DNPU layers.
@@ -51,6 +53,8 @@ Supported decoder modes:
 - `transpose`: existing digital `Linear -> ConvTranspose2d -> ConvTranspose2d` decoder.
 - `zero_conv`: digital zero-insertion upsampling followed by ordinary `Conv2d`.
 - `dnpu_zero_conv`: digital zero insertion plus DNPUConv decoder layers.
+- `zero_conv_mixing`: `zero_conv` plus an extra ordinary `Conv2d` mixing layer after each upsampling stage.
+- `dnpu_zero_conv_mixing`: `dnpu_zero_conv` plus an extra DNPUConv mixing layer after each upsampling stage.
 
 For the main raw-latent zero-conv configuration with `--dnpu-channels 16,1` and `--decoder-channels 16,1`, the feature-map path is:
 
@@ -73,6 +77,23 @@ The final stage uses:
 ```text
 convolution -> BatchNorm2d
 ```
+
+For the mixing variants, each upsampling stage adds a second same-resolution `2 x 2` convolution after the first one. Intermediate stages use:
+
+```text
+zero insert -> pad -> convolution -> BatchNorm2d -> ReLU
+-> pad -> mixing convolution -> BatchNorm2d -> ReLU
+```
+
+The final mixing stage uses:
+
+```text
+zero insert -> pad -> convolution -> BatchNorm2d
+-> pad -> mixing convolution
+```
+
+All zero-conv decoder modes require `--latent-mode raw`, because the latent vector is reshaped directly back into the encoder output feature map.
+For zero-conv decoders, `--decoder-channels` must contain exactly one channel count per factor-two upsampling stage and must end with `1`.
 
 The decoder output remains logits. Sigmoid is used only inside the reconstruction losses where needed and for image-space metrics and saved reconstructions.
 
@@ -97,7 +118,7 @@ Main CIFAR entry points:
 - `train_cifar_dnpu_stack_autoencoder.py`: configurable DNPU stack autoencoder.
 - `train_cifar_dnpuconv_autoencoder.py`: earlier CIFAR DNPUConv implementation kept for compatibility.
 - `train_cifar_latent_probe.py`: linear and MLP probes on frozen latents.
-- `train_cifar_fixed_decoder.py`: fixed-random-decoder hierarchy and oracle-`z` check.
+- `train_cifar_fixed_decoder.py`: fixed-decoder hierarchy, frozen random baselines, and oracle-`z` sanity checks.
 
 Earlier prototype code for Bars & Stripes remains in the repository root:
 
@@ -204,7 +225,43 @@ python train_cifar_dnpu_stack_autoencoder.py \
   --device cpu
 ```
 
-### 4. Freeze-encoder ablation
+### 4. Digital zero-convolution decoder with mixing
+
+```bash
+python train_cifar_dnpu_stack_autoencoder.py \
+  --data-dir data_cifar \
+  --results-dir results_cifar_zero_conv_mixing_16_1_raw64_l1 \
+  --subset-size 5000 \
+  --batch-size 32 \
+  --epochs 10 \
+  --encoder-type dnpu \
+  --dnpu-channels 16,1 \
+  --latent-mode raw \
+  --decoder-type zero_conv_mixing \
+  --decoder-channels 16,1 \
+  --loss l1 \
+  --device cpu
+```
+
+### 5. DNPU zero-convolution decoder with mixing
+
+```bash
+python train_cifar_dnpu_stack_autoencoder.py \
+  --data-dir data_cifar \
+  --results-dir results_cifar_dnpu_zero_conv_mixing_16_1_raw64_l1 \
+  --subset-size 5000 \
+  --batch-size 32 \
+  --epochs 10 \
+  --encoder-type dnpu \
+  --dnpu-channels 16,1 \
+  --latent-mode raw \
+  --decoder-type dnpu_zero_conv_mixing \
+  --decoder-channels 16,1 \
+  --loss l1 \
+  --device cpu
+```
+
+### 6. Freeze-encoder ablation
 
 ```bash
 python train_cifar_dnpu_stack_autoencoder.py \
@@ -223,7 +280,63 @@ python train_cifar_dnpu_stack_autoencoder.py \
   --device cpu
 ```
 
-### 5. Linear and MLP latent probes
+### 7. Fixed-decoder hierarchy experiments
+
+Frozen random DNPU encoder+decoder baseline:
+
+```bash
+python train_cifar_fixed_decoder.py \
+  --mode frozen_random \
+  --data-dir data_cifar \
+  --results-dir results_fixed_decoder_frozen_random \
+  --subset-size 5000 \
+  --test-size 5000 \
+  --batch-size 32 \
+  --encoder-type dnpu \
+  --dnpu-channels 16,1 \
+  --latent-mode raw \
+  --latent-dim 64 \
+  --loss l1 \
+  --device cpu
+```
+
+Train a DNPU encoder against a frozen reinitialized decoder:
+
+```bash
+python train_cifar_fixed_decoder.py \
+  --mode train_dnpu_encoder \
+  --data-dir data_cifar \
+  --results-dir results_fixed_decoder_train_dnpu \
+  --subset-size 5000 \
+  --test-size 5000 \
+  --batch-size 32 \
+  --epochs 50 \
+  --encoder-type dnpu \
+  --dnpu-channels 16,1 \
+  --latent-mode raw \
+  --latent-dim 64 \
+  --loss l1 \
+  --device cpu
+```
+
+Oracle-`z` ceiling for the frozen digital decoder:
+
+```bash
+python train_cifar_fixed_decoder.py \
+  --mode oracle_z \
+  --data-dir data_cifar \
+  --results-dir results_fixed_decoder_oracle_z \
+  --test-size 5000 \
+  --batch-size 32 \
+  --latent-dim 64 \
+  --loss l1 \
+  --oracle-steps 500 \
+  --oracle-lr 1e-2 \
+  --oracle-batches 20 \
+  --device cpu
+```
+
+### 8. Linear and MLP latent probes
 
 Linear probe:
 
@@ -254,6 +367,21 @@ python train_cifar_latent_probe.py \
   --device cpu
 ```
 
+Random-initialized control for the same checkpointed architecture:
+
+```bash
+python train_cifar_latent_probe.py \
+  --checkpoint results_cifar_transpose_16_1_raw64_l1/cifar_dnpu_stack_autoencoder.pt \
+  --random-init \
+  --head linear \
+  --subset-size 5000 \
+  --test-size 5000 \
+  --batch-size 64 \
+  --epochs 50 \
+  --results-dir results_probe_linear_random_init \
+  --device cpu
+```
+
 ## Indicative results
 
 These values are representative short-run observations on 5,000 grayscale CIFAR-10 training images. They are not guaranteed benchmarks.
@@ -268,7 +396,7 @@ These values are representative short-run observations on 5,000 grayscale CIFAR-
 | Trained encoder + linear probe | about **28-29%** accuracy |
 | Trained encoder + MLP probe | about **34-35%** accuracy |
 
-No numerical claims are made here yet for the new zero-insertion DNPU decoder modes.
+No numerical claims are made here yet for the new zero-insertion decoder modes with or without mixing, or for the fixed-decoder hierarchy experiments.
 
 ## Limitations and open questions
 
@@ -276,6 +404,7 @@ No numerical claims are made here yet for the new zero-insertion DNPU decoder mo
 - The goal is an engineering proof of concept, not state-of-the-art CIFAR reconstruction.
 - The surrogate model is not the same as a hardware experiment.
 - Zero insertion, routing, tensor reshaping, and BatchNorm calibration remain digital.
+- The mixing variants still rely on digital zero insertion and routing even when the convolution layers themselves are DNPU-based.
 - The full system still relies on global backpropagation.
 - CIFAR-10 is converted to grayscale.
 - The physical decoder performance has not yet been established empirically.

@@ -31,7 +31,14 @@ def freeze_dnpu_parameters(model):
             or name.startswith("dnpu_layers")
             or (
                 name.startswith("decoder.layers")
-                and getattr(model, "decoder_type", None) == "dnpu_zero_conv"
+                and getattr(model, "decoder_type", None) in (
+                    "dnpu_zero_conv",
+                    "dnpu_zero_conv_mixing",
+                )
+            )
+            or (
+                name.startswith("decoder.mixing_layers")
+                and getattr(model, "decoder_type", None) == "dnpu_zero_conv_mixing"
             )
         ) and param.requires_grad:
             frozen_trainable += param.numel()
@@ -133,7 +140,15 @@ def count_parameter_breakdown(model, trainable_only=False):
 
             if (
                 module_name.startswith("decoder.layers")
-                and getattr(model, "decoder_type", None) == "dnpu_zero_conv"
+                and getattr(model, "decoder_type", None) in (
+                    "dnpu_zero_conv",
+                    "dnpu_zero_conv_mixing",
+                )
+            ):
+                counts["decoder_dnpu_controls"] += param.numel()
+            elif (
+                module_name.startswith("decoder.mixing_layers")
+                and getattr(model, "decoder_type", None) == "dnpu_zero_conv_mixing"
             ):
                 counts["decoder_dnpu_controls"] += param.numel()
             elif module_name.startswith("dnpu_layers") or module_name.startswith("dnpu_conv"):

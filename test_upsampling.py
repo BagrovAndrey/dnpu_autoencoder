@@ -53,6 +53,31 @@ def test_digital_two_stage_decoder_maps_1x8x8_to_1x32x32():
     assert y.shape == (4, 1, 32, 32)
 
 
+def test_digital_two_stage_mixing_decoder_maps_1x8x8_to_1x32x32():
+    decoder = DigitalZeroConvDecoder(
+        raw_channels=1,
+        raw_spatial_size=8,
+        decoder_channels=[16, 1],
+        use_mixing=True,
+    )
+    x = torch.randn(4, 1, 8, 8)
+    y = decoder(x)
+    assert y.shape == (4, 1, 32, 32)
+
+
+def test_mixing_decoder_has_extra_convs_per_stage():
+    decoder = DigitalZeroConvDecoder(
+        raw_channels=1,
+        raw_spatial_size=8,
+        decoder_channels=[16, 1],
+        use_mixing=True,
+    )
+    assert len(decoder.layers) == 2
+    assert len(decoder.mixing_layers) == 2
+    assert len(decoder.norm_layers) == 2
+    assert len(decoder.mixing_norm_layers) == 1
+
+
 @pytest.mark.parametrize(
     "raw_spatial_size,decoder_channels,error_text",
     [

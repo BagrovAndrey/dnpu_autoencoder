@@ -88,11 +88,12 @@ def _format_shape(channels, spatial_size):
 class _ZeroConvDecoderBase(nn.Module):
     """Shared logic for digital and DNPU zero-insertion decoders."""
 
-    def __init__(self, raw_channels, raw_spatial_size, decoder_channels):
+    def __init__(self, raw_channels, raw_spatial_size, decoder_channels, use_mixing=False):
         super().__init__()
         self.raw_channels = raw_channels
         self.raw_spatial_size = raw_spatial_size
         self.decoder_channels = list(decoder_channels)
+        self.use_mixing = use_mixing
         self.stage_specs = parse_decoder_stage_specs(
             raw_spatial_size=raw_spatial_size,
             raw_channels=raw_channels,
@@ -102,6 +103,10 @@ class _ZeroConvDecoderBase(nn.Module):
         self.norm_layers = nn.ModuleList(
             [nn.BatchNorm2d(spec["out_channels"]) for spec in self.stage_specs]
         )
+        if self.use_mixing:
+            self.mixing_norm_layers = nn.ModuleList(
+                [nn.BatchNorm2d(spec["out_channels"]) for spec in self.stage_specs[:-1]]
+            )
 
     def _make_conv_layer(self, in_channels, out_channels):
         raise NotImplementedError
@@ -113,6 +118,13 @@ class _ZeroConvDecoderBase(nn.Module):
                 for spec in self.stage_specs
             ]
         )
+        if self.use_mixing:
+            self.mixing_layers = nn.ModuleList(
+                [
+                    self._make_conv_layer(spec["out_channels"], spec["out_channels"])
+                    for spec in self.stage_specs
+                ]
+            )
 
     @property
     def stage_shape_strings(self):
@@ -182,6 +194,63 @@ class _ZeroConvDecoderBase(nn.Module):
 
             if idx < len(self.stage_specs):
                 h = F.relu(h)
+                if self.use_mixing:
+                    h = F.pad(h, (0, 1, 0, 1))
+                    expected_mixing_padded_shape = (
+                        x.shape[0],
+                        spec["out_channels"],
+                        spec["out_spatial_size"] + 1,
+                        spec["out_spatial_size"] + 1,
+                    )
+                    if tuple(h.shape) != expected_mixing_padded_shape:
+                        raise RuntimeError(
+                            f"Decoder stage {idx} mixing padding produced {tuple(h.shape)}, "
+                            f"expected {expected_mixing_padded_shape}."
+                        )
+
+                    h = self.mixing_layers[idx - 1](h)
+                    h = self.mixing_norm_layers[idx - 1](h)
+
+                    expected_mixing_shape = (
+                        x.shape[0],
+                        spec["out_channels"],
+                        spec["out_spatial_size"],
+                        spec["out_spatial_size"],
+                    )
+                    if tuple(h.shape) != expected_mixing_shape:
+                        raise RuntimeError(
+                            f"Decoder stage {idx} mixing convolution produced {tuple(h.shape)}, "
+                            f"expected {expected_mixing_shape}."
+                        )
+
+                    h = F.relu(h)
+            elif self.use_mixing:
+                h = F.pad(h, (0, 1, 0, 1))
+                expected_mixing_padded_shape = (
+                    x.shape[0],
+                    spec["out_channels"],
+                    spec["out_spatial_size"] + 1,
+                    spec["out_spatial_size"] + 1,
+                )
+                if tuple(h.shape) != expected_mixing_padded_shape:
+                    raise RuntimeError(
+                        f"Decoder stage {idx} final mixing padding produced {tuple(h.shape)}, "
+                        f"expected {expected_mixing_padded_shape}."
+                    )
+
+                h = self.mixing_layers[idx - 1](h)
+
+                expected_mixing_shape = (
+                    x.shape[0],
+                    spec["out_channels"],
+                    spec["out_spatial_size"],
+                    spec["out_spatial_size"],
+                )
+                if tuple(h.shape) != expected_mixing_shape:
+                    raise RuntimeError(
+                        f"Decoder stage {idx} final mixing convolution produced {tuple(h.shape)}, "
+                        f"expected {expected_mixing_shape}."
+                    )
 
         return h
 
@@ -189,11 +258,12 @@ class _ZeroConvDecoderBase(nn.Module):
 class DigitalZeroConvDecoder(_ZeroConvDecoderBase):
     """Zero-insertion upsampling decoder built from ordinary Conv2d layers."""
 
-    def __init__(self, raw_channels, raw_spatial_size, decoder_channels):
+    def __init__(self, raw_channels, raw_spatial_size, decoder_channels, use_mixing=False):
         super().__init__(
             raw_channels=raw_channels,
             raw_spatial_size=raw_spatial_size,
             decoder_channels=decoder_channels,
+            use_mixing=use_mixing,
         )
         self._build_layers()
 
@@ -210,11 +280,19 @@ class DigitalZeroConvDecoder(_ZeroConvDecoderBase):
 class DNPUZeroConvDecoder(_ZeroConvDecoderBase):
     """Zero-insertion upsampling decoder built from DNPUConv2d layers."""
 
-    def __init__(self, processor, raw_channels, raw_spatial_size, decoder_channels):
+    def __init__(
+        self,
+        processor,
+        raw_channels,
+        raw_spatial_size,
+        decoder_channels,
+        use_mixing=False,
+    ):
         super().__init__(
             raw_channels=raw_channels,
             raw_spatial_size=raw_spatial_size,
             decoder_channels=decoder_channels,
+            use_mixing=use_mixing,
         )
         self.processor = processor
         self._build_layers()

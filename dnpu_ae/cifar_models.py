@@ -140,7 +140,13 @@ class DNPUStackCIFARAutoencoder(nn.Module):
             raise ValueError(f"Unknown encoder_type: {encoder_type}")
         if latent_mode not in ["raw", "linear"]:
             raise ValueError(f"Unknown latent_mode: {latent_mode}")
-        if decoder_type not in ["transpose", "zero_conv", "dnpu_zero_conv"]:
+        if decoder_type not in [
+            "transpose",
+            "zero_conv",
+            "dnpu_zero_conv",
+            "zero_conv_mixing",
+            "dnpu_zero_conv_mixing",
+        ]:
             raise ValueError(f"Unknown decoder_type: {decoder_type}")
         if len(dnpu_channels) > 5:
             raise ValueError(
@@ -236,6 +242,24 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 decoder_channels=self.decoder_channels,
             )
             self.decoder_stage_shapes = self.decoder.stage_shape_strings
+        elif decoder_type == "dnpu_zero_conv":
+            self.from_latent = nn.Identity()
+            self.decoder = DNPUZeroConvDecoder(
+                processor=processor,
+                raw_channels=self.raw_channels,
+                raw_spatial_size=self.raw_spatial_size,
+                decoder_channels=self.decoder_channels,
+            )
+            self.decoder_stage_shapes = self.decoder.stage_shape_strings
+        elif decoder_type == "zero_conv_mixing":
+            self.from_latent = nn.Identity()
+            self.decoder = DigitalZeroConvDecoder(
+                raw_channels=self.raw_channels,
+                raw_spatial_size=self.raw_spatial_size,
+                decoder_channels=self.decoder_channels,
+                use_mixing=True,
+            )
+            self.decoder_stage_shapes = self.decoder.stage_shape_strings
         else:
             self.from_latent = nn.Identity()
             self.decoder = DNPUZeroConvDecoder(
@@ -243,6 +267,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 raw_channels=self.raw_channels,
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,
+                use_mixing=True,
             )
             self.decoder_stage_shapes = self.decoder.stage_shape_strings
 
