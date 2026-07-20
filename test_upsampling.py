@@ -3,6 +3,7 @@ import torch
 
 from dnpu_ae.upsampling import (
     DigitalZeroConvDecoder,
+    _pad_kernel2_same_size,
     parse_decoder_stage_specs,
     zero_insert_upsample_2d,
 )
@@ -40,6 +41,13 @@ def test_zero_insert_gradients_propagate():
     loss.backward()
     assert x.grad is not None
     assert torch.equal(x.grad, torch.ones_like(x))
+
+
+@pytest.mark.parametrize("pad_mode", ["bottom_right", "top_left"])
+def test_kernel2_same_size_padding_gives_expected_spatial_shape(pad_mode):
+    x = torch.randn(2, 3, 8, 8)
+    y = _pad_kernel2_same_size(x, pad_mode)
+    assert y.shape == (2, 3, 9, 9)
 
 
 def test_digital_two_stage_decoder_maps_1x8x8_to_1x32x32():

@@ -85,6 +85,15 @@ def _format_shape(channels, spatial_size):
     return f"{channels} x {spatial_size} x {spatial_size}"
 
 
+def _pad_kernel2_same_size(x, pad_mode):
+    """Pad by one pixel total for a kernel-2 stride-1 layer without fixing one phase."""
+    if pad_mode == "bottom_right":
+        return F.pad(x, (0, 1, 0, 1))
+    if pad_mode == "top_left":
+        return F.pad(x, (1, 0, 1, 0))
+    raise ValueError(f"Unknown pad_mode: {pad_mode}")
+
+
 class _ZeroConvDecoderBase(nn.Module):
     """Shared logic for digital and DNPU zero-insertion decoders."""
 
@@ -110,6 +119,12 @@ class _ZeroConvDecoderBase(nn.Module):
 
     def _make_conv_layer(self, in_channels, out_channels):
         raise NotImplementedError
+
+    def _stage_pad_mode(self, idx):
+        return "bottom_right" if idx % 2 == 1 else "top_left"
+
+    def _mixing_pad_mode(self, idx):
+        return "top_left" if idx % 2 == 1 else "bottom_right"
 
     def _build_layers(self):
         self.layers = nn.ModuleList(
@@ -164,7 +179,7 @@ class _ZeroConvDecoderBase(nn.Module):
                     f"expected {expected_up_shape}."
                 )
 
-            h = F.pad(h, (0, 1, 0, 1))
+            h = _pad_kernel2_same_size(h, self._stage_pad_mode(idx))
             expected_padded_shape = (
                 x.shape[0],
                 spec["in_channels"],
@@ -195,7 +210,8 @@ class _ZeroConvDecoderBase(nn.Module):
             if idx < len(self.stage_specs):
                 h = F.relu(h)
                 if self.use_mixing:
-                    h = F.pad(h, (0, 1, 0, 1))
+                    residual = h
+                    h = _pad_kernel2_same_size(h, self._mixing_pad_mode(idx))
                     expected_mixing_padded_shape = (
                         x.shape[0],
                         spec["out_channels"],
@@ -208,8 +224,8 @@ class _ZeroConvDecoderBase(nn.Module):
                             f"expected {expected_mixing_padded_shape}."
                         )
 
-                    h = self.mixing_layers[idx - 1](h)
-                    h = self.mixing_norm_layers[idx - 1](h)
+                    mixed = self.mixing_layers[idx - 1](h)
+                    mixed = self.mixing_norm_layers[idx - 1](mixed)
 
                     expected_mixing_shape = (
                         x.shape[0],
@@ -217,15 +233,16 @@ class _ZeroConvDecoderBase(nn.Module):
                         spec["out_spatial_size"],
                         spec["out_spatial_size"],
                     )
-                    if tuple(h.shape) != expected_mixing_shape:
+                    if tuple(mixed.shape) != expected_mixing_shape:
                         raise RuntimeError(
-                            f"Decoder stage {idx} mixing convolution produced {tuple(h.shape)}, "
+                            f"Decoder stage {idx} mixing convolution produced {tuple(mixed.shape)}, "
                             f"expected {expected_mixing_shape}."
                         )
 
-                    h = F.relu(h)
+                    h = F.relu(residual + mixed)
             elif self.use_mixing:
-                h = F.pad(h, (0, 1, 0, 1))
+                residual = h
+                h = _pad_kernel2_same_size(h, self._mixing_pad_mode(idx))
                 expected_mixing_padded_shape = (
                     x.shape[0],
                     spec["out_channels"],
@@ -238,7 +255,7 @@ class _ZeroConvDecoderBase(nn.Module):
                         f"expected {expected_mixing_padded_shape}."
                     )
 
-                h = self.mixing_layers[idx - 1](h)
+                mixed = self.mixing_layers[idx - 1](h)
 
                 expected_mixing_shape = (
                     x.shape[0],
@@ -246,11 +263,13 @@ class _ZeroConvDecoderBase(nn.Module):
                     spec["out_spatial_size"],
                     spec["out_spatial_size"],
                 )
-                if tuple(h.shape) != expected_mixing_shape:
+                if tuple(mixed.shape) != expected_mixing_shape:
                     raise RuntimeError(
-                        f"Decoder stage {idx} final mixing convolution produced {tuple(h.shape)}, "
+                        f"Decoder stage {idx} final mixing convolution produced {tuple(mixed.shape)}, "
                         f"expected {expected_mixing_shape}."
                     )
+
+                h = residual + mixed
 
         return h
 
