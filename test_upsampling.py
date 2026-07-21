@@ -3,7 +3,9 @@ import torch
 
 from dnpu_ae.upsampling import (
     DigitalZeroConvDecoder,
+    DigitalNearestConvDecoder,
     _pad_kernel2_same_size,
+    nearest_neighbor_upsample_2d,
     parse_decoder_stage_specs,
     zero_insert_upsample_2d,
 )
@@ -43,6 +45,12 @@ def test_zero_insert_gradients_propagate():
     assert torch.equal(x.grad, torch.ones_like(x))
 
 
+def test_nearest_neighbor_upsample_shape():
+    x = torch.randn(2, 3, 4, 5)
+    y = nearest_neighbor_upsample_2d(x, scale_factor=2)
+    assert y.shape == (2, 3, 8, 10)
+
+
 @pytest.mark.parametrize("pad_mode", ["bottom_right", "top_left"])
 def test_kernel2_same_size_padding_gives_expected_spatial_shape(pad_mode):
     x = torch.randn(2, 3, 8, 8)
@@ -67,6 +75,17 @@ def test_digital_two_stage_mixing_decoder_maps_1x8x8_to_1x32x32():
         raw_spatial_size=8,
         decoder_channels=[16, 1],
         use_mixing=True,
+    )
+    x = torch.randn(4, 1, 8, 8)
+    y = decoder(x)
+    assert y.shape == (4, 1, 32, 32)
+
+
+def test_digital_two_stage_nearest_decoder_maps_1x8x8_to_1x32x32():
+    decoder = DigitalNearestConvDecoder(
+        raw_channels=1,
+        raw_spatial_size=8,
+        decoder_channels=[16, 1],
     )
     x = torch.randn(4, 1, 8, 8)
     y = decoder(x)

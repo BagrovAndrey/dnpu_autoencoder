@@ -34,6 +34,7 @@ def freeze_dnpu_parameters(model):
                 and getattr(model, "decoder_type", None) in (
                     "dnpu_zero_conv",
                     "dnpu_zero_conv_mixing",
+                    "dnpu_nearest_conv",
                 )
             )
             or (
@@ -143,6 +144,7 @@ def count_parameter_breakdown(model, trainable_only=False):
                 and getattr(model, "decoder_type", None) in (
                     "dnpu_zero_conv",
                     "dnpu_zero_conv_mixing",
+                    "dnpu_nearest_conv",
                 )
             ):
                 counts["decoder_dnpu_controls"] += param.numel()

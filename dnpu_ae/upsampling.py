@@ -22,6 +22,18 @@ def zero_insert_upsample_2d(x, scale_factor=2):
     return out
 
 
+def nearest_neighbor_upsample_2d(x, scale_factor=2):
+    """Upsample by nearest-neighbor replication."""
+    if x.ndim != 4:
+        raise ValueError(
+            f"nearest_neighbor_upsample_2d expects a 4D tensor, got shape {tuple(x.shape)}"
+        )
+    if scale_factor <= 0:
+        raise ValueError(f"scale_factor must be positive, got {scale_factor}")
+
+    return F.interpolate(x, scale_factor=scale_factor, mode="nearest")
+
+
 def parse_decoder_stage_specs(raw_spatial_size, raw_channels, decoder_channels, target_size=32):
     """Validate zero-conv decoder arithmetic and return per-stage metadata."""
     if raw_spatial_size <= 0:
@@ -312,6 +324,158 @@ class DNPUZeroConvDecoder(_ZeroConvDecoderBase):
             raw_spatial_size=raw_spatial_size,
             decoder_channels=decoder_channels,
             use_mixing=use_mixing,
+        )
+        self.processor = processor
+        self._build_layers()
+
+    def _make_conv_layer(self, in_channels, out_channels):
+        from brainspy.processors.modules.conv import DNPUConv2d
+
+        return DNPUConv2d(
+            processor=self.processor,
+            data_input_indices=[[0, 1, 2, 3]],
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=2,
+            stride=1,
+            padding=0,
+            forward_pass_type="vec",
+        )
+
+
+class _NearestConvDecoderBase(nn.Module):
+    """Shared logic for digital and DNPU nearest-neighbor decoders."""
+
+    def __init__(self, raw_channels, raw_spatial_size, decoder_channels):
+        super().__init__()
+        self.raw_channels = raw_channels
+        self.raw_spatial_size = raw_spatial_size
+        self.decoder_channels = list(decoder_channels)
+        self.stage_specs = parse_decoder_stage_specs(
+            raw_spatial_size=raw_spatial_size,
+            raw_channels=raw_channels,
+            decoder_channels=self.decoder_channels,
+            target_size=32,
+        )
+        self.norm_layers = nn.ModuleList(
+            [nn.BatchNorm2d(spec["out_channels"]) for spec in self.stage_specs]
+        )
+
+    def _make_conv_layer(self, in_channels, out_channels):
+        raise NotImplementedError
+
+    def _stage_pad_mode(self, idx):
+        return "bottom_right" if idx % 2 == 1 else "top_left"
+
+    def _build_layers(self):
+        self.layers = nn.ModuleList(
+            [
+                self._make_conv_layer(spec["in_channels"], spec["out_channels"])
+                for spec in self.stage_specs
+            ]
+        )
+
+    @property
+    def stage_shape_strings(self):
+        shapes = [_format_shape(self.raw_channels, self.raw_spatial_size)]
+        for spec in self.stage_specs:
+            shapes.append(_format_shape(spec["out_channels"], spec["out_spatial_size"]))
+        return shapes
+
+    def forward(self, x):
+        expected_input_shape = (
+            x.shape[0],
+            self.raw_channels,
+            self.raw_spatial_size,
+            self.raw_spatial_size,
+        )
+        if tuple(x.shape) != expected_input_shape:
+            raise ValueError(
+                "Decoder expected raw latent feature map shape "
+                f"{expected_input_shape}, got {tuple(x.shape)}."
+            )
+
+        h = x
+        for idx, (layer, norm, spec) in enumerate(
+            zip(self.layers, self.norm_layers, self.stage_specs),
+            start=1,
+        ):
+            h = nearest_neighbor_upsample_2d(h, scale_factor=2)
+            expected_up_shape = (
+                x.shape[0],
+                spec["in_channels"],
+                spec["upsampled_spatial_size"],
+                spec["upsampled_spatial_size"],
+            )
+            if tuple(h.shape) != expected_up_shape:
+                raise RuntimeError(
+                    f"Decoder stage {idx} nearest-neighbor upsampling produced {tuple(h.shape)}, "
+                    f"expected {expected_up_shape}."
+                )
+
+            h = _pad_kernel2_same_size(h, self._stage_pad_mode(idx))
+            expected_padded_shape = (
+                x.shape[0],
+                spec["in_channels"],
+                spec["padded_spatial_size"],
+                spec["padded_spatial_size"],
+            )
+            if tuple(h.shape) != expected_padded_shape:
+                raise RuntimeError(
+                    f"Decoder stage {idx} padding produced {tuple(h.shape)}, "
+                    f"expected {expected_padded_shape}."
+                )
+
+            h = layer(h)
+            h = norm(h)
+
+            expected_out_shape = (
+                x.shape[0],
+                spec["out_channels"],
+                spec["out_spatial_size"],
+                spec["out_spatial_size"],
+            )
+            if tuple(h.shape) != expected_out_shape:
+                raise RuntimeError(
+                    f"Decoder stage {idx} convolution produced {tuple(h.shape)}, "
+                    f"expected {expected_out_shape}."
+                )
+
+            if idx < len(self.stage_specs):
+                h = F.relu(h)
+
+        return h
+
+
+class DigitalNearestConvDecoder(_NearestConvDecoderBase):
+    """Nearest-neighbor upsampling decoder built from ordinary Conv2d layers."""
+
+    def __init__(self, raw_channels, raw_spatial_size, decoder_channels):
+        super().__init__(
+            raw_channels=raw_channels,
+            raw_spatial_size=raw_spatial_size,
+            decoder_channels=decoder_channels,
+        )
+        self._build_layers()
+
+    def _make_conv_layer(self, in_channels, out_channels):
+        return nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=2,
+            stride=1,
+            padding=0,
+        )
+
+
+class DNPUNearestConvDecoder(_NearestConvDecoderBase):
+    """Nearest-neighbor upsampling decoder built from DNPUConv2d layers."""
+
+    def __init__(self, processor, raw_channels, raw_spatial_size, decoder_channels):
+        super().__init__(
+            raw_channels=raw_channels,
+            raw_spatial_size=raw_spatial_size,
+            decoder_channels=decoder_channels,
         )
         self.processor = processor
         self._build_layers()

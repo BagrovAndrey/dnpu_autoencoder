@@ -5,7 +5,9 @@ import torch.nn.functional as F
 from brainspy.processors.modules.conv import DNPUConv2d
 
 from dnpu_ae.upsampling import (
+    DNPUNearestConvDecoder,
     DNPUZeroConvDecoder,
+    DigitalNearestConvDecoder,
     DigitalZeroConvDecoder,
 )
 
@@ -146,6 +148,8 @@ class DNPUStackCIFARAutoencoder(nn.Module):
             "dnpu_zero_conv",
             "zero_conv_mixing",
             "dnpu_zero_conv_mixing",
+            "nearest_conv",
+            "dnpu_nearest_conv",
         ]:
             raise ValueError(f"Unknown decoder_type: {decoder_type}")
         if len(dnpu_channels) > 5:
@@ -260,7 +264,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 use_mixing=True,
             )
             self.decoder_stage_shapes = self.decoder.stage_shape_strings
-        else:
+        elif decoder_type == "dnpu_zero_conv_mixing":
             self.from_latent = nn.Identity()
             self.decoder = DNPUZeroConvDecoder(
                 processor=processor,
@@ -268,6 +272,23 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,
                 use_mixing=True,
+            )
+            self.decoder_stage_shapes = self.decoder.stage_shape_strings
+        elif decoder_type == "nearest_conv":
+            self.from_latent = nn.Identity()
+            self.decoder = DigitalNearestConvDecoder(
+                raw_channels=self.raw_channels,
+                raw_spatial_size=self.raw_spatial_size,
+                decoder_channels=self.decoder_channels,
+            )
+            self.decoder_stage_shapes = self.decoder.stage_shape_strings
+        else:
+            self.from_latent = nn.Identity()
+            self.decoder = DNPUNearestConvDecoder(
+                processor=processor,
+                raw_channels=self.raw_channels,
+                raw_spatial_size=self.raw_spatial_size,
+                decoder_channels=self.decoder_channels,
             )
             self.decoder_stage_shapes = self.decoder.stage_shape_strings
 

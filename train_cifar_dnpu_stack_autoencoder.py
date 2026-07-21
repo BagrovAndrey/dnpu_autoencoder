@@ -53,9 +53,11 @@ def parse_args():
             "dnpu_zero_conv",
             "zero_conv_mixing",
             "dnpu_zero_conv_mixing",
+            "nearest_conv",
+            "dnpu_nearest_conv",
         ],
         default="transpose",
-        help="transpose = existing ConvTranspose2d decoder; zero_conv = digital zero-insertion decoder; dnpu_zero_conv = DNPU zero-insertion decoder; *_mixing adds an extra same-size mixing convolution after each upsampling stage.",
+        help="transpose = existing ConvTranspose2d decoder; zero_conv = digital zero-insertion decoder; dnpu_zero_conv = DNPU zero-insertion decoder; *_mixing adds an extra same-size mixing convolution after each upsampling stage; nearest_conv and dnpu_nearest_conv use nearest-neighbor upsampling before each kernel-2 convolution.",
     )
     parser.add_argument(
         "--decoder-channels",
