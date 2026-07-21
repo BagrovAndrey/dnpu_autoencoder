@@ -92,6 +92,17 @@ def test_digital_two_stage_nearest_decoder_maps_1x8x8_to_1x32x32():
     assert y.shape == (4, 1, 32, 32)
 
 
+def test_digital_two_stage_nearest_decoder_maps_16x8x8_to_1x32x32():
+    decoder = DigitalNearestConvDecoder(
+        raw_channels=16,
+        raw_spatial_size=8,
+        decoder_channels=[16, 1],
+    )
+    x = torch.randn(4, 16, 8, 8)
+    y = decoder(x)
+    assert y.shape == (4, 1, 32, 32)
+
+
 def test_mixing_decoder_has_extra_convs_per_stage():
     decoder = DigitalZeroConvDecoder(
         raw_channels=1,

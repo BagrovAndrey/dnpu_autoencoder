@@ -150,6 +150,8 @@ class DNPUStackCIFARAutoencoder(nn.Module):
             "dnpu_zero_conv_mixing",
             "nearest_conv",
             "dnpu_nearest_conv",
+            "nearest_conv_linear",
+            "dnpu_nearest_conv_linear",
         ]:
             raise ValueError(f"Unknown decoder_type: {decoder_type}")
         if len(dnpu_channels) > 5:
@@ -157,7 +159,11 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 "Too many DNPU layers for 32x32 input with kernel=2, stride=2. "
                 "Maximum is 5: 32 -> 16 -> 8 -> 4 -> 2 -> 1."
             )
-        if decoder_type != "transpose" and latent_mode != "raw":
+        if decoder_type not in [
+            "transpose",
+            "nearest_conv_linear",
+            "dnpu_nearest_conv_linear",
+        ] and latent_mode != "raw":
             raise ValueError(
                 f"decoder_type={decoder_type!r} requires --latent-mode raw because "
                 "the latent vector is reshaped directly into the encoder output feature map."
@@ -282,11 +288,36 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 decoder_channels=self.decoder_channels,
             )
             self.decoder_stage_shapes = self.decoder.stage_shape_strings
-        else:
+        elif decoder_type == "nearest_conv_linear":
+            hidden_channels = self.decoder_channels[0]
+            self.from_latent = nn.Linear(
+                self.latent_dim,
+                hidden_channels * self.raw_spatial_size * self.raw_spatial_size,
+            )
+            self.decoder = DigitalNearestConvDecoder(
+                raw_channels=hidden_channels,
+                raw_spatial_size=self.raw_spatial_size,
+                decoder_channels=self.decoder_channels,
+            )
+            self.decoder_stage_shapes = self.decoder.stage_shape_strings
+        elif decoder_type == "dnpu_nearest_conv":
             self.from_latent = nn.Identity()
             self.decoder = DNPUNearestConvDecoder(
                 processor=processor,
                 raw_channels=self.raw_channels,
+                raw_spatial_size=self.raw_spatial_size,
+                decoder_channels=self.decoder_channels,
+            )
+            self.decoder_stage_shapes = self.decoder.stage_shape_strings
+        else:
+            hidden_channels = self.decoder_channels[0]
+            self.from_latent = nn.Linear(
+                self.latent_dim,
+                hidden_channels * self.raw_spatial_size * self.raw_spatial_size,
+            )
+            self.decoder = DNPUNearestConvDecoder(
+                processor=processor,
+                raw_channels=hidden_channels,
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,
             )
@@ -323,6 +354,13 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         h_dec = self.from_latent(z)
         if self.decoder_type == "transpose":
             h_dec = h_dec.reshape(x.shape[0], 16, 8, 8)
+        elif self.decoder_type in ["nearest_conv_linear", "dnpu_nearest_conv_linear"]:
+            h_dec = h_dec.reshape(
+                x.shape[0],
+                self.decoder_channels[0],
+                self.raw_spatial_size,
+                self.raw_spatial_size,
+            )
         else:
             h_dec = h_dec.reshape(
                 x.shape[0],
