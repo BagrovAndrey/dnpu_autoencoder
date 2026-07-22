@@ -7,3 +7,6 @@ surrogate_model.pt
 
 .ipynb_checkpoints/
 .DS_Store
+
+
+/.vscode
