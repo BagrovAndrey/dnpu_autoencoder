@@ -86,11 +86,12 @@ The final stage uses:
 convolution -> BatchNorm2d
 ```
 
-For the mixing variants, each upsampling stage adds a second same-resolution `2 x 2` convolution after the first one. Intermediate stages use:
+For the mixing variants, each upsampling stage adds a second same-resolution `2 x 2` convolution after the first one. In code this is implemented as a residual mixing block. Intermediate stages use:
 
 ```text
 zero insert -> pad -> convolution -> BatchNorm2d -> ReLU
--> pad -> mixing convolution -> BatchNorm2d -> ReLU
+-> pad -> mixing convolution -> BatchNorm2d
+-> residual add -> ReLU
 ```
 
 The final mixing stage uses:
@@ -98,6 +99,7 @@ The final mixing stage uses:
 ```text
 zero insert -> pad -> convolution -> BatchNorm2d
 -> pad -> mixing convolution
+-> residual add
 ```
 
 `zero_conv`, `dnpu_zero_conv`, `zero_conv_mixing`, `dnpu_zero_conv_mixing`, `nearest_conv`, and `dnpu_nearest_conv` require `--latent-mode raw`, because the latent vector is reshaped directly back into the encoder output feature map.
@@ -131,6 +133,12 @@ dnpu_ae/
 ```
 
 `dnpu_ae/processor.py` is the ownership boundary for BrainSpy integration. It builds one shared simulation backend `Processor`, freezes the surrogate parameters inside that backend, and exposes a small factory API that creates per-layer `DNPUConv2d` modules with their own trainable `control_voltages`.
+
+The recent refactor also simplified class structure:
+
+- `DNPUBackend` centralizes shared `Processor` ownership and compatibility wrappers.
+- `DNPUStackCIFARAutoencoder` and `DNPUConvCIFARAutoencoder` accept either a legacy `processor` or the newer `backend` abstraction.
+- The decoder families now share explicit base classes in `dnpu_ae/upsampling.py`, rather than duplicating digital and DNPU implementations stage by stage.
 
 Main CIFAR entry points:
 
@@ -496,7 +504,11 @@ The probe loader accepts both current stack checkpoints and older legacy CIFAR c
 
 `train_cifar_dnpuconv_autoencoder.py` saves the legacy checkpoint `cifar_dnpuconv_autoencoder.pt`.
 
-`train_cifar_fixed_decoder.py` saves reconstruction grids for the chosen mode, including `recon_epoch0000.png` for the initial frozen-decoder evaluation and `recon_oracle_z.png` for the oracle run.
+`train_cifar_fixed_decoder.py` saves reconstruction grids for the chosen mode:
+
+- `recon_frozen_random.png` for the fully frozen random baseline
+- `recon_epoch0000.png` plus per-epoch grids for the trainable-encoder modes
+- `recon_oracle_z.png` for the oracle run
 
 `train_cifar_latent_probe.py` saves the trained probe head as `latent_probe_head.pt`.
 
