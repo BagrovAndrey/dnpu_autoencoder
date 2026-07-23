@@ -13,7 +13,7 @@ from dnpu_ae.model_utils import (
     freeze_encoder_parameters,
     parse_channel_list,
 )
-from dnpu_ae.processor import make_processor
+from dnpu_ae.processor import make_backend
 from dnpu_ae.reconstruction import (
     evaluate_reconstruction as evaluate,
     reconstruction_loss,
@@ -137,10 +137,10 @@ def main():
         train_shuffle=True,
     )
 
-    processor = make_processor()
+    backend = make_backend()
 
     model = DNPUStackCIFARAutoencoder(
-        processor=processor,
+        backend=backend,
         encoder_type=args.encoder_type,
         dnpu_channels=dnpu_channels,
         latent_mode=args.latent_mode,

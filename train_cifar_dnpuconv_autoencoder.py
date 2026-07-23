@@ -11,7 +11,7 @@ from dnpu_ae.model_utils import (
     freeze_dnpu_parameters,
     freeze_encoder_parameters,
 )
-from dnpu_ae.processor import make_processor
+from dnpu_ae.processor import make_backend
 from dnpu_ae.reconstruction import (
     evaluate_reconstruction as evaluate,
     reconstruction_loss,
@@ -113,10 +113,10 @@ def main():
         train_shuffle=True,
     )
 
-    processor = make_processor()
+    backend = make_backend()
 
     model = DNPUConvCIFARAutoencoder(
-        processor=processor,
+        backend=backend,
         encoder_type=args.encoder_type,
         conv_channels=args.conv_channels,
         conv2_channels=args.conv2_channels,

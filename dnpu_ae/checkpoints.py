@@ -7,7 +7,7 @@ from dnpu_ae.cifar_models import (
     DNPUStackCIFARAutoencoder,
 )
 from dnpu_ae.model_utils import parse_channel_list
-from dnpu_ae.processor import make_processor
+from dnpu_ae.processor import make_backend
 
 
 def get_arg(args_dict, name, default):
@@ -30,7 +30,7 @@ def build_encoder_from_checkpoint(checkpoint_path, device, random_init=False):
     """Build and freeze the legacy or stack encoder described by a checkpoint."""
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     args_dict = ckpt.get("args", {})
-    processor = make_processor()
+    backend = make_backend()
 
     is_stack_checkpoint = (
         "dnpu_channels" in ckpt
@@ -44,7 +44,7 @@ def build_encoder_from_checkpoint(checkpoint_path, device, random_init=False):
             parse_maybe_channel_list(get_arg(args_dict, "dnpu_channels", "16,1")),
         )
         model = DNPUStackCIFARAutoencoder(
-            processor=processor,
+            backend=backend,
             encoder_type=get_arg(args_dict, "encoder_type", "dnpu"),
             dnpu_channels=dnpu_channels,
             latent_mode=get_arg(args_dict, "latent_mode", "raw"),
@@ -58,7 +58,7 @@ def build_encoder_from_checkpoint(checkpoint_path, device, random_init=False):
         model_kind = "stack"
     else:
         model = DNPUConvCIFARAutoencoder(
-            processor=processor,
+            backend=backend,
             encoder_type=get_arg(args_dict, "encoder_type", "hybrid"),
             conv_channels=int(get_arg(args_dict, "conv_channels", 8)),
             conv2_channels=int(get_arg(args_dict, "conv2_channels", 1)),

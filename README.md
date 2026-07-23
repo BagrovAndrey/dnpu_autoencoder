@@ -130,6 +130,8 @@ dnpu_ae/
 └── upsampling.py
 ```
 
+`dnpu_ae/processor.py` is the ownership boundary for BrainSpy integration. It builds one shared simulation backend `Processor`, freezes the surrogate parameters inside that backend, and exposes a small factory API that creates per-layer `DNPUConv2d` modules with their own trainable `control_voltages`.
+
 Main CIFAR entry points:
 
 - `train_cifar_dnpu_stack_autoencoder.py`: configurable DNPU stack autoencoder.

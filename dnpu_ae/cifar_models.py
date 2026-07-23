@@ -2,14 +2,25 @@
 
 import torch.nn as nn
 import torch.nn.functional as F
-from brainspy.processors.modules.conv import DNPUConv2d
 
+from dnpu_ae.processor import DNPUBackend
 from dnpu_ae.upsampling import (
     DNPUNearestConvDecoder,
     DNPUZeroConvDecoder,
     DigitalNearestConvDecoder,
     DigitalZeroConvDecoder,
 )
+
+
+def _resolve_backend(processor=None, backend=None):
+    """Return a backend abstraction while preserving the legacy processor API."""
+    if backend is not None:
+        if processor is not None and backend.processor is not processor:
+            raise ValueError("Use either backend or processor, not both with different objects.")
+        return backend
+    if processor is None:
+        raise ValueError("A DNPU backend or Processor instance is required.")
+    return DNPUBackend(processor=processor)
 
 
 class DNPUConvCIFARAutoencoder(nn.Module):
@@ -21,7 +32,8 @@ class DNPUConvCIFARAutoencoder(nn.Module):
 
     def __init__(
         self,
-        processor,
+        processor=None,
+        backend=None,
         encoder_type="hybrid",
         conv_channels=8,
         conv2_channels=1,
@@ -40,9 +52,9 @@ class DNPUConvCIFARAutoencoder(nn.Module):
         self.conv2_channels = conv2_channels
         self.latent_mode = latent_mode
         self.requested_latent_dim = latent_dim
+        self.backend = _resolve_backend(processor=processor, backend=backend)
 
-        self.dnpu_conv1 = DNPUConv2d(
-            processor=processor,
+        self.dnpu_conv1 = self.backend.conv2d(
             data_input_indices=[[0, 1, 2, 3]],
             in_channels=1,
             out_channels=conv_channels,
@@ -61,8 +73,7 @@ class DNPUConvCIFARAutoencoder(nn.Module):
             )
             self.raw_channels = 16
         else:
-            self.dnpu_conv2 = DNPUConv2d(
-                processor=processor,
+            self.dnpu_conv2 = self.backend.conv2d(
                 data_input_indices=[[0, 1, 2, 3]],
                 in_channels=conv_channels,
                 out_channels=conv2_channels,
@@ -124,7 +135,8 @@ class DNPUStackCIFARAutoencoder(nn.Module):
 
     def __init__(
         self,
-        processor,
+        processor=None,
+        backend=None,
         encoder_type="dnpu",
         dnpu_channels=None,
         latent_mode="raw",
@@ -175,6 +187,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         self.requested_latent_dim = latent_dim
         self.decoder_type = decoder_type
         self.decoder_channels = list(decoder_channels)
+        self.backend = _resolve_backend(processor=processor, backend=backend)
         self.dnpu_layers = nn.ModuleList()
         self.norm_layers = nn.ModuleList()
 
@@ -184,8 +197,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         if encoder_type == "hybrid":
             c1 = dnpu_channels[0]
             self.dnpu_layers.append(
-                DNPUConv2d(
-                    processor=processor,
+                self.backend.conv2d(
                     data_input_indices=[[0, 1, 2, 3]],
                     in_channels=1,
                     out_channels=c1,
@@ -206,8 +218,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         else:
             for out_channels in dnpu_channels:
                 self.dnpu_layers.append(
-                    DNPUConv2d(
-                        processor=processor,
+                    self.backend.conv2d(
                         data_input_indices=[[0, 1, 2, 3]],
                         in_channels=in_channels,
                         out_channels=out_channels,
@@ -255,7 +266,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         elif decoder_type == "dnpu_zero_conv":
             self.from_latent = nn.Identity()
             self.decoder = DNPUZeroConvDecoder(
-                processor=processor,
+                backend=self.backend,
                 raw_channels=self.raw_channels,
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,
@@ -273,7 +284,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         elif decoder_type == "dnpu_zero_conv_mixing":
             self.from_latent = nn.Identity()
             self.decoder = DNPUZeroConvDecoder(
-                processor=processor,
+                backend=self.backend,
                 raw_channels=self.raw_channels,
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,
@@ -303,7 +314,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
         elif decoder_type == "dnpu_nearest_conv":
             self.from_latent = nn.Identity()
             self.decoder = DNPUNearestConvDecoder(
-                processor=processor,
+                backend=self.backend,
                 raw_channels=self.raw_channels,
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,
@@ -316,7 +327,7 @@ class DNPUStackCIFARAutoencoder(nn.Module):
                 hidden_channels * self.raw_spatial_size * self.raw_spatial_size,
             )
             self.decoder = DNPUNearestConvDecoder(
-                processor=processor,
+                backend=self.backend,
                 raw_channels=hidden_channels,
                 raw_spatial_size=self.raw_spatial_size,
                 decoder_channels=self.decoder_channels,

@@ -25,7 +25,7 @@ from dnpu_ae.model_utils import (
     reinitialize_dnpu_decoder,
     reset_module_parameters,
 )
-from dnpu_ae.processor import make_processor
+from dnpu_ae.processor import make_backend
 from dnpu_ae.reconstruction import (
     evaluate_reconstruction as evaluate,
     reconstruction_loss,
@@ -266,10 +266,10 @@ def run_oracle_z(test_loader, args, device, results_dir):
 def build_dnpu_model(args, device):
     dnpu_channels = parse_channel_list(args.dnpu_channels)
 
-    processor = make_processor()
+    backend = make_backend()
 
     model = DNPUStackCIFARAutoencoder(
-        processor=processor,
+        backend=backend,
         encoder_type=args.encoder_type,
         dnpu_channels=dnpu_channels,
         latent_mode=args.latent_mode,

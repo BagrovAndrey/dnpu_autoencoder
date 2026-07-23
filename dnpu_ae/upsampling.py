@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from dnpu_ae.processor import DNPUBackend
+
 
 def zero_insert_upsample_2d(x, scale_factor=2):
     """Upsample by placing input values at even coordinates and zeros elsewhere."""
@@ -309,15 +311,16 @@ class DigitalZeroConvDecoder(_ZeroConvDecoderBase):
 
 
 class DNPUZeroConvDecoder(_ZeroConvDecoderBase):
-    """Zero-insertion upsampling decoder built from DNPUConv2d layers."""
+    """Zero-insertion decoder built from DNPUConv2d layers on a shared backend."""
 
     def __init__(
         self,
-        processor,
         raw_channels,
         raw_spatial_size,
         decoder_channels,
         use_mixing=False,
+        processor=None,
+        backend=None,
     ):
         super().__init__(
             raw_channels=raw_channels,
@@ -325,14 +328,11 @@ class DNPUZeroConvDecoder(_ZeroConvDecoderBase):
             decoder_channels=decoder_channels,
             use_mixing=use_mixing,
         )
-        self.processor = processor
+        self.backend = backend if backend is not None else DNPUBackend(processor=processor)
         self._build_layers()
 
     def _make_conv_layer(self, in_channels, out_channels):
-        from brainspy.processors.modules.conv import DNPUConv2d
-
-        return DNPUConv2d(
-            processor=self.processor,
+        return self.backend.conv2d(
             data_input_indices=[[0, 1, 2, 3]],
             in_channels=in_channels,
             out_channels=out_channels,
@@ -469,22 +469,26 @@ class DigitalNearestConvDecoder(_NearestConvDecoderBase):
 
 
 class DNPUNearestConvDecoder(_NearestConvDecoderBase):
-    """Nearest-neighbor upsampling decoder built from DNPUConv2d layers."""
+    """Nearest-neighbor decoder built from DNPUConv2d layers on a shared backend."""
 
-    def __init__(self, processor, raw_channels, raw_spatial_size, decoder_channels):
+    def __init__(
+        self,
+        raw_channels,
+        raw_spatial_size,
+        decoder_channels,
+        processor=None,
+        backend=None,
+    ):
         super().__init__(
             raw_channels=raw_channels,
             raw_spatial_size=raw_spatial_size,
             decoder_channels=decoder_channels,
         )
-        self.processor = processor
+        self.backend = backend if backend is not None else DNPUBackend(processor=processor)
         self._build_layers()
 
     def _make_conv_layer(self, in_channels, out_channels):
-        from brainspy.processors.modules.conv import DNPUConv2d
-
-        return DNPUConv2d(
-            processor=self.processor,
+        return self.backend.conv2d(
             data_input_indices=[[0, 1, 2, 3]],
             in_channels=in_channels,
             out_channels=out_channels,
