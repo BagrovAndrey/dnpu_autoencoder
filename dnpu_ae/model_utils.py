@@ -1,6 +1,6 @@
 """Small model-management helpers shared by CIFAR experiments."""
 
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 
 import torch
 import torch.nn as nn
@@ -123,47 +123,50 @@ def reinitialize_dnpu_decoder(model, decoder_seed):
     torch.random.set_rng_state(state)
 
 
-def count_parameter_breakdown(model, trainable_only=False):
-    """Return grouped parameter counts for encoder/decoder DNPU and BatchNorm parts."""
+def _batchnorm_parameter_names(model):
+    names = set()
+    for module_name, module in model.named_modules():
+        if not isinstance(module, nn.BatchNorm2d):
+            continue
+        for param_name, _ in module.named_parameters(recurse=False):
+            names.add(f"{module_name}.{param_name}" if module_name else param_name)
+    return names
+
+
+def count_parameter_breakdown(model):
+    """Return grouped parameter counts with DNPU controls separated from surrogate weights."""
     counts = OrderedDict(
         [
-            ("encoder_dnpu_controls", 0),
-            ("decoder_dnpu_controls", 0),
-            ("encoder_batchnorm", 0),
-            ("decoder_batchnorm", 0),
-            ("other_digital", 0),
+            ("processor_surrogate_frozen", {"total": 0, "trainable": 0}),
+            ("encoder_dnpu_controls", {"total": 0, "trainable": 0}),
+            ("decoder_dnpu_controls", {"total": 0, "trainable": 0}),
+            ("encoder_batchnorm", {"total": 0, "trainable": 0}),
+            ("decoder_batchnorm", {"total": 0, "trainable": 0}),
+            ("other_digital", {"total": 0, "trainable": 0}),
         ]
     )
 
-    for module_name, module in model.named_modules():
-        for _, param in module.named_parameters(recurse=False):
-            if trainable_only and not param.requires_grad:
-                continue
+    batchnorm_names = _batchnorm_parameter_names(model)
 
-            if (
-                module_name.startswith("decoder.layers")
-                and getattr(model, "decoder_type", None) in (
-                    "dnpu_zero_conv",
-                    "dnpu_zero_conv_mixing",
-                    "dnpu_nearest_conv",
-                    "dnpu_nearest_conv_linear",
-                )
-            ):
-                counts["decoder_dnpu_controls"] += param.numel()
-            elif (
-                module_name.startswith("decoder.mixing_layers")
-                and getattr(model, "decoder_type", None) == "dnpu_zero_conv_mixing"
-            ):
-                counts["decoder_dnpu_controls"] += param.numel()
-            elif module_name.startswith("dnpu_layers") or module_name.startswith("dnpu_conv"):
-                counts["encoder_dnpu_controls"] += param.numel()
-            elif isinstance(module, nn.BatchNorm2d):
-                if module_name.startswith("decoder."):
-                    counts["decoder_batchnorm"] += param.numel()
-                else:
-                    counts["encoder_batchnorm"] += param.numel()
-            else:
-                counts["other_digital"] += param.numel()
+    for name, param in model.named_parameters():
+        if name.endswith("control_voltages"):
+            key = "decoder_dnpu_controls" if name.startswith("decoder.") else "encoder_dnpu_controls"
+        elif ".processor." in name or name.startswith("processor."):
+            key = "processor_surrogate_frozen"
+        elif name in batchnorm_names:
+            key = "decoder_batchnorm" if name.startswith("decoder.") else "encoder_batchnorm"
+        else:
+            key = "other_digital"
 
-    counts["total"] = sum(counts.values())
+        counts[key]["total"] += param.numel()
+        if param.requires_grad:
+            counts[key]["trainable"] += param.numel()
+
+    totals = defaultdict(int)
+    for group_counts in counts.values():
+        totals["total"] += group_counts["total"]
+        totals["trainable"] += group_counts["trainable"]
+    counts["registered_parameters_total"] = totals["total"]
+    counts["trainable_parameters_total"] = totals["trainable"]
+
     return counts

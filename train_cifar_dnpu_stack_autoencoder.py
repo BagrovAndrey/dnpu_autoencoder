@@ -163,8 +163,7 @@ def main():
         frozen_encoder_params = freeze_encoder_parameters(model)
 
     total_params, trainable_params = count_parameters(model)
-    total_breakdown = count_parameter_breakdown(model, trainable_only=False)
-    trainable_breakdown = count_parameter_breakdown(model, trainable_only=True)
+    parameter_breakdown = count_parameter_breakdown(model)
 
     optimizer = torch.optim.Adam(
         [p for p in model.parameters() if p.requires_grad],
@@ -196,18 +195,37 @@ def main():
     print(f"  frozen BN pars:    {frozen_bn_params}")
     print(f"  freeze_encoder:    {args.freeze_encoder}")
     print(f"  frozen enc pars:   {frozen_encoder_params}")
-    print(f"  total params:      {total_params}")
-    print(f"  trainable params:  {trainable_params}")
-    print(f"  enc DNPU total:    {total_breakdown['encoder_dnpu_controls']}")
-    print(f"  dec DNPU total:    {total_breakdown['decoder_dnpu_controls']}")
-    print(f"  enc BN total:      {total_breakdown['encoder_batchnorm']}")
-    print(f"  dec BN total:      {total_breakdown['decoder_batchnorm']}")
-    print(f"  other digital:     {total_breakdown['other_digital']}")
-    print(f"  enc DNPU train:    {trainable_breakdown['encoder_dnpu_controls']}")
-    print(f"  dec DNPU train:    {trainable_breakdown['decoder_dnpu_controls']}")
-    print(f"  enc BN train:      {trainable_breakdown['encoder_batchnorm']}")
-    print(f"  dec BN train:      {trainable_breakdown['decoder_batchnorm']}")
-    print(f"  other dig train:   {trainable_breakdown['other_digital']}")
+    print(f"  registered parameters total: {total_params}")
+    print(f"  trainable parameters total:  {trainable_params}")
+    print(
+        "  processor surrogate parameters, frozen: "
+        f"{parameter_breakdown['processor_surrogate_frozen']['total']}"
+    )
+    print(
+        "  encoder DNPU control voltages:          "
+        f"{parameter_breakdown['encoder_dnpu_controls']['total']} total | "
+        f"{parameter_breakdown['encoder_dnpu_controls']['trainable']} trainable"
+    )
+    print(
+        "  decoder DNPU control voltages:          "
+        f"{parameter_breakdown['decoder_dnpu_controls']['total']} total | "
+        f"{parameter_breakdown['decoder_dnpu_controls']['trainable']} trainable"
+    )
+    print(
+        "  encoder BatchNorm parameters:           "
+        f"{parameter_breakdown['encoder_batchnorm']['total']} total | "
+        f"{parameter_breakdown['encoder_batchnorm']['trainable']} trainable"
+    )
+    print(
+        "  decoder BatchNorm parameters:           "
+        f"{parameter_breakdown['decoder_batchnorm']['total']} total | "
+        f"{parameter_breakdown['decoder_batchnorm']['trainable']} trainable"
+    )
+    print(
+        "  other digital parameters:               "
+        f"{parameter_breakdown['other_digital']['total']} total | "
+        f"{parameter_breakdown['other_digital']['trainable']} trainable"
+    )
     print(f"  device:            {device}")
     print()
 
