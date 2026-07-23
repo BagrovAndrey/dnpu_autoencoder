@@ -188,6 +188,16 @@ BrainSpy and the surrounding PyTorch stack are version-sensitive. `requirements_
 
 CIFAR-10 is loaded through `torchvision` into `data_cifar/`.
 
+The repository does not store CIFAR-10 itself. The dataset is downloaded on demand by `torchvision.datasets.CIFAR10(..., download=True)` the first time you run a CIFAR script.
+
+If you want to download the dataset in advance, run:
+
+```bash
+python -c "from dnpu_ae.cifar_data import make_grayscale_cifar_subsets; make_grayscale_cifar_subsets('data_cifar', train_size=1, test_size=1)"
+```
+
+After that, the local directory will contain the usual `torchvision` CIFAR files under `data_cifar/`.
+
 The preprocessing path is:
 
 ```text
