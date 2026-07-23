@@ -14,6 +14,8 @@ The current CIFAR experiments study both physical encoders and DNPU-based decode
 - Raw physical bottlenecks versus an additional digital linear bottleneck.
 - Zero-insertion upsampling decoders built either from ordinary `Conv2d` or from BrainSpy `DNPUConv2d`.
 - Zero-insertion upsampling decoders with an additional same-resolution mixing convolution after each upsampling stage.
+- Nearest-neighbor upsampling decoders built either from ordinary `Conv2d` or from BrainSpy `DNPUConv2d`.
+- Hybrid decoder variants that first apply a global digital `Linear` map and only then decode with nearest-neighbor upsampling.
 - Freeze ablations for DNPU controls, BatchNorm parameters, and the full encoder.
 - Fixed-decoder hierarchy experiments, including frozen random decoders and oracle-`z` latent optimization.
 - Linear and MLP probes on frozen latent representations.
@@ -25,9 +27,11 @@ The zero-insertion decoder is inspired by transposed convolution, but it is **no
 | Role | Current implementation |
 |---|---|
 | Physical or hardware-like nonlinear encoder | `DNPUConv2d` |
-| Physical or hardware-like nonlinear decoder | `DNPUConv2d` in `--decoder-type dnpu_zero_conv` |
+| Physical or hardware-like nonlinear decoder | `DNPUConv2d` in `--decoder-type dnpu_zero_conv`, `dnpu_zero_conv_mixing`, `dnpu_nearest_conv`, and the DNPU convolution stages of `dnpu_nearest_conv_linear` |
 | Trainable physical parameters | DNPU control voltages |
+| Global latent-to-feature projection | Digital `Linear` in `transpose`, `nearest_conv_linear`, and `dnpu_nearest_conv_linear` |
 | Zero insertion and routing | Digital tensor operations |
+| Nearest-neighbor upsampling | Digital tensor operations |
 | Tensor reshaping | Digital |
 | Readout calibration | `BatchNorm2d` |
 | Activations | `ReLU` |
@@ -55,6 +59,10 @@ Supported decoder modes:
 - `dnpu_zero_conv`: digital zero insertion plus DNPUConv decoder layers.
 - `zero_conv_mixing`: `zero_conv` plus an extra ordinary `Conv2d` mixing layer after each upsampling stage.
 - `dnpu_zero_conv_mixing`: `dnpu_zero_conv` plus an extra DNPUConv mixing layer after each upsampling stage.
+- `nearest_conv`: nearest-neighbor upsampling followed by ordinary `Conv2d`.
+- `dnpu_nearest_conv`: nearest-neighbor upsampling followed by DNPUConv decoder layers.
+- `nearest_conv_linear`: global digital `Linear` projection to a feature map, then `nearest_conv`.
+- `dnpu_nearest_conv_linear`: global digital `Linear` projection to a feature map, then `dnpu_nearest_conv`.
 
 For the main raw-latent zero-conv configuration with `--dnpu-channels 16,1` and `--decoder-channels 16,1`, the feature-map path is:
 
@@ -92,8 +100,17 @@ zero insert -> pad -> convolution -> BatchNorm2d
 -> pad -> mixing convolution
 ```
 
-All zero-conv decoder modes require `--latent-mode raw`, because the latent vector is reshaped directly back into the encoder output feature map.
-For zero-conv decoders, `--decoder-channels` must contain exactly one channel count per factor-two upsampling stage and must end with `1`.
+`zero_conv`, `dnpu_zero_conv`, `zero_conv_mixing`, `dnpu_zero_conv_mixing`, `nearest_conv`, and `dnpu_nearest_conv` require `--latent-mode raw`, because the latent vector is reshaped directly back into the encoder output feature map.
+`transpose`, `nearest_conv_linear`, and `dnpu_nearest_conv_linear` are the decoder modes that support `--latent-mode linear`.
+For all upsampling decoders, `--decoder-channels` must contain exactly one channel count per factor-two upsampling stage and must end with `1`.
+
+For `nearest_conv_linear` and `dnpu_nearest_conv_linear`, the first decoder step is a large digital `Linear(latent_dim -> C x H x W)` projection. The DNPU variant is therefore not a fully physical decoder: it is a DNPU convolutional decoder preceded by a substantial digital mixing stage.
+
+The configurable DNPU stack supports at most five stride-2 DNPU stages on a `32 x 32` input:
+
+```text
+32 -> 16 -> 8 -> 4 -> 2 -> 1
+```
 
 The decoder output remains logits. Sigmoid is used only inside the reconstruction losses where needed and for image-space metrics and saved reconstructions.
 
@@ -118,7 +135,7 @@ Main CIFAR entry points:
 - `train_cifar_dnpu_stack_autoencoder.py`: configurable DNPU stack autoencoder.
 - `train_cifar_dnpuconv_autoencoder.py`: earlier CIFAR DNPUConv implementation kept for compatibility.
 - `train_cifar_latent_probe.py`: linear and MLP probes on frozen latents.
-- `train_cifar_fixed_decoder.py`: fixed-decoder hierarchy, frozen random baselines, and oracle-`z` sanity checks.
+- `train_cifar_fixed_decoder.py`: fixed-decoder hierarchy, frozen random baselines, DNPU-vs-digital encoder comparisons, and oracle-`z` sanity checks.
 
 Earlier prototype code for Bars & Stripes remains in the repository root:
 
@@ -128,6 +145,14 @@ Earlier prototype code for Bars & Stripes remains in the repository root:
 - `train_hybrid.py`
 - `train_generalization.py`
 - `train_frozen_encoder.py`
+
+Useful diagnostic and test scripts in the repository root:
+
+- `test_upsampling.py`: unit tests for zero-insertion and nearest-neighbor decoder utilities.
+- `test_dnpuconv_forward.py`: forward/backward smoke test for BrainSpy `DNPUConv2d`.
+- `check_surrogate.py`: inspect `surrogate_model.pt` and verify BrainSpy importability.
+- `check_processor_forward.py`, `check_dnpu_unit.py`, `check_dnpu_layer.py`: low-level DNPU processor and custom layer checks.
+- `inspect_dnpuconv.py`, `inspect_info.py`: quick introspection helpers for BrainSpy internals and surrogate checkpoint metadata.
 
 ## Installation and environment
 
@@ -332,6 +357,8 @@ python train_cifar_dnpu_stack_autoencoder.py \
   --device cpu
 ```
 
+The same script also supports `--freeze-dnpu` and `--freeze-bn`. `--freeze-encoder` is mutually exclusive with those partial-freeze modes, and `--freeze-dnpu` cannot be combined with `--freeze-bn`.
+
 ### 9. Fixed-decoder hierarchy experiments
 
 Frozen random DNPU encoder+decoder baseline:
@@ -371,6 +398,22 @@ python train_cifar_fixed_decoder.py \
   --device cpu
 ```
 
+Train a digital encoder against the same frozen random decoder:
+
+```bash
+python train_cifar_fixed_decoder.py \
+  --mode train_digital_encoder \
+  --data-dir data_cifar \
+  --results-dir results_fixed_decoder_train_digital \
+  --subset-size 5000 \
+  --test-size 5000 \
+  --batch-size 32 \
+  --epochs 50 \
+  --latent-dim 64 \
+  --loss l1 \
+  --device cpu
+```
+
 Oracle-`z` ceiling for the frozen digital decoder:
 
 ```bash
@@ -387,6 +430,12 @@ python train_cifar_fixed_decoder.py \
   --oracle-batches 20 \
   --device cpu
 ```
+
+Additional useful fixed-decoder controls:
+
+- `--eval-batches`: number of test batches used for periodic evaluation during training.
+- `--decoder-seed`: deterministic reinitialization seed for the frozen decoder.
+- `--oracle-log-every`: print oracle metrics every N latent-optimization steps.
 
 ### 10. Linear and MLP latent probes
 
@@ -434,6 +483,21 @@ python train_cifar_latent_probe.py \
   --device cpu
 ```
 
+The probe loader accepts both current stack checkpoints and older legacy CIFAR checkpoints. It reconstructs the frozen encoder from the saved metadata, caches train/test latents once, trains only the probe head, and saves the result as `latent_probe_head.pt`.
+
+## Saved artifacts
+
+`train_cifar_dnpu_stack_autoencoder.py` saves:
+
+- per-epoch reconstruction grids such as `cifar_recon_epoch0001.png`
+- a checkpoint `cifar_dnpu_stack_autoencoder.pt` containing `model_state_dict`, CLI `args`, `dnpu_channels`, `raw_channels`, `raw_spatial_size`, `raw_latent_dim`, `latent_dim`, `decoder_type`, and `decoder_channels`
+
+`train_cifar_dnpuconv_autoencoder.py` saves the legacy checkpoint `cifar_dnpuconv_autoencoder.pt`.
+
+`train_cifar_fixed_decoder.py` saves reconstruction grids for the chosen mode, including `recon_epoch0000.png` for the initial frozen-decoder evaluation and `recon_oracle_z.png` for the oracle run.
+
+`train_cifar_latent_probe.py` saves the trained probe head as `latent_probe_head.pt`.
+
 ## Indicative results
 
 These values are representative short-run observations on 5,000 grayscale CIFAR-10 training images. They are not guaranteed benchmarks.
@@ -456,7 +520,9 @@ No numerical claims are made here yet for the new zero-insertion decoder modes w
 - The goal is an engineering proof of concept, not state-of-the-art CIFAR reconstruction.
 - The surrogate model is not the same as a hardware experiment.
 - Zero insertion, routing, tensor reshaping, and BatchNorm calibration remain digital.
+- Nearest-neighbor upsampling and the `*_nearest_conv_linear` latent-to-feature projection remain digital.
 - The mixing variants still rely on digital zero insertion and routing even when the convolution layers themselves are DNPU-based.
+- `dnpu_nearest_conv_linear` is not a fully physical decoder because a global digital `Linear` map precedes the DNPU convolutional stages.
 - The full system still relies on global backpropagation.
 - CIFAR-10 is converted to grayscale.
 - The physical decoder performance has not yet been established empirically.
