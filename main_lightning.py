@@ -3,22 +3,22 @@ PyTorch Lightning entry point for the DNPU autoencoder project.
 
 Consolidates what used to be four separate scripts:
     train_hybrid.py         -> train on all Bars & Stripes patterns
-    train_frozen_encoder.py -> same, with --freeze-encoder
-    train_generalization.py -> train/test split via --train-size
-    test_noise_robustness.py -> voltage-noise sweep via --noise-sigmas
+    train_frozen_encoder.py -> same, with freeze_encoder=True
+    train_generalization.py -> train/test split via train_size
+    test_noise_robustness.py -> voltage-noise sweep via noise_sigmas
 
-Usage examples:
-    python main_lightning.py
-    python main_lightning.py --freeze-encoder
-    python main_lightning.py --train-size 15
-    python main_lightning.py --noise-sigmas 0.0 0.01 0.02 0.05 0.1 0.2
-    python main_lightning.py --baseline --latent-dim 4
+No command-line arguments needed: edit the `Config(...)` call at the bottom
+of this file (under `if __name__ == "__main__":`) and run it directly, e.g.
+from an IDE's "Run" button or `python main_lightning.py`.
 """
 
-import argparse
+from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Optional
 
+from numpy import False_
 import torch
+torch.set_float32_matmul_precision('medium')
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -46,15 +46,23 @@ def make_processor(checkpoint_path):
     ckpt = torch.load(Path(checkpoint_path), weights_only = False)
 
     processor = Processor(
-        configs={
-            "processor_type": "simulation",
-            "waveform": {
+        configs = {
+            "processor_type" : "simulation",
+            "electrode_effects": {
+                "amplification": [28.5], 
+                # "amplification": [1],
+                # "noise": {
+                #     "type": "gaussian",
+                #     "variance": 0.005
+                # }
+            },
+            "waveform":{
+                "slope_length" : 0,
                 "plateau_length": 1,
-                "slope_length": 0,
             },
         },
-        info=ckpt["info"],
-        model_state_dict=ckpt["model_state_dict"],
+        info = ckpt["info"],
+        model_state_dict = ckpt['model_state_dict']
     )
 
     voltage_ranges = ckpt["info"]["electrode_info"]["activation_electrodes"]["voltage_ranges"]
@@ -122,13 +130,13 @@ class BarsStripesDataModule(pl.LightningDataModule):
         self.test_dataset = TensorDataset(x_volt[self.test_idx], x_pixels[self.test_idx])
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=len(self.train_dataset), shuffle=False)
+        return DataLoader(self.train_dataset, batch_size=len(self.train_dataset), shuffle=False, num_workers = 32, pin_memory=True, persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=len(self.test_dataset), shuffle=False)
+        return DataLoader(self.test_dataset, batch_size=len(self.test_dataset), shuffle=False, num_workers = 32, pin_memory=True, persistent_workers=True)
 
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=len(self.test_dataset), shuffle=False)
+        return DataLoader(self.test_dataset, batch_size=len(self.test_dataset), shuffle=False, num_workers = 32, pin_memory=True, persistent_workers=True)
 
 
 class DNPUAutoencoderModule(pl.LightningModule):
@@ -149,6 +157,10 @@ class DNPUAutoencoderModule(pl.LightningModule):
         self.lambda_z = lambda_z
         self.z0 = z0
         self.save_hyperparameters(ignore=["model"])
+
+    # def configure_model(self):
+    #     # compile the model for speed, if PyTorch 2.0+ is available
+    #     self.model = torch.compile(self.model, mode="default", dynamic=False)
 
     def forward(self, x):
         return self.model(x)
@@ -345,85 +357,53 @@ def make_run_name(args):
     )
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Lightning training/testing for the DNPU autoencoder."
-    )
+@dataclass
+class Config:
+    """
+    Plain settings object, edited in code instead of via the command line.
+    Every field mirrors what used to be an argparse flag; see the __main__
+    block at the bottom of this file for where to change values.
+    """
 
     # Model choice.
-    parser.add_argument(
-        "--baseline",
-        action="store_true",
-        help="Use the purely digital baseline autoencoder instead of the DNPU hybrid model.",
-    )
-    parser.add_argument(
-        "--freeze-encoder",
-        action="store_true",
-        help="Freeze DNPU control voltages and only train the digital decoder.",
-    )
-    parser.add_argument("--surrogate-checkpoint", type=str, default="surrogate_model.pt")
+    baseline: bool = False  # Use DigitalBaselineAutoencoder instead of the DNPU hybrid model.
+    freeze_encoder: bool = False  # Freeze DNPU control voltages, train only the digital decoder.
+    surrogate_checkpoint: str = "surrogate_model.pt"
 
     # Architecture knobs.
-    parser.add_argument("--image-size", type=int, default=4)
-    parser.add_argument("--n-data", type=int, default=4)
-    parser.add_argument("--n-control", type=int, default=3)
-    parser.add_argument(
-        "--latent-dim",
-        type=int,
-        default=None,
-        help="Compressed digital latent dimension. Default: no compression "
-        "(hybrid) / 4 (baseline).",
-    )
-    parser.add_argument(
-        "--group-type",
-        type=str,
-        default="auto",
-        choices=["auto", "2x2", "horizontal", "vertical"],
-    )
+    image_size: int = 4
+    n_data: int = 4
+    n_control: int = 3
+    latent_dim: Optional[int] = None  # None -> no compression (hybrid) / 4 (baseline).
+    group_type: str = "auto"  # "auto", "2x2", "horizontal", "vertical"
 
     # Data / split.
-    parser.add_argument(
-        "--train-size",
-        type=int,
-        default=None,
-        help="If set, train/test split like train_generalization.py. "
-        "Default: train on all patterns (like train_hybrid.py).",
-    )
-    parser.add_argument("--v-low", type=float, default=-0.5)
-    parser.add_argument("--v-high", type=float, default=0.5)
+    train_size: Optional[int] = None  # None -> train on all patterns (train_hybrid.py style).
+    v_low: float = -0.5
+    v_high: float = 0.5
 
     # Training knobs.
-    parser.add_argument("--epochs", type=int, default=5000)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--lambda-z", type=float, default=1e-3)
-    parser.add_argument("--z0", type=float, default=10.0)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--eval-every", type=int, default=500)
-    parser.add_argument("--accelerator", type=str, default="cpu")
+    epochs: int = 5000
+    lr: float = 1e-3
+    weight_decay: float = 0.0
+    lambda_z: float = 1e-3
+    z0: float = 10.0
+    seed: int = 0
+    eval_every: int = 500
+    accelerator: str = "cpu"
 
     # Output.
-    parser.add_argument("--results-dir", type=str, default="results")
-    parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--save-cases", action="store_true")
-    parser.add_argument("--num-sample", type=int, default=8)
+    results_dir: str = "results"
+    run_name: Optional[str] = None
+    save_cases: bool = False
+    num_sample: int = 8
 
     # Noise robustness (test_noise_robustness.py).
-    parser.add_argument(
-        "--noise-sigmas",
-        type=float,
-        nargs="+",
-        default=None,
-        help="If set, run a voltage-noise robustness sweep after training.",
-    )
-    parser.add_argument("--noise-repeats", type=int, default=20)
-
-    return parser.parse_args()
+    noise_sigmas: Optional[List[float]] = None  # e.g. [0.0, 0.01, 0.02, 0.05, 0.1, 0.2]
+    noise_repeats: int = 20
 
 
-def main():
-    args = parse_args()
-
+def main(args):
     if not args.baseline and args.n_data + args.n_control != 7:
         raise ValueError("--n-data + --n-control must be 7.")
 
@@ -508,13 +488,14 @@ def main():
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         accelerator=args.accelerator,
-        devices=1,
+        devices= [1] if args.accelerator == "gpu" else [0],
         logger=[csv_logger, tb_logger],
         callbacks=[checkpoint_callback, PeriodicPrintCallback(every=args.eval_every)],
         check_val_every_n_epoch=args.eval_every,
         enable_progress_bar=False,
         log_every_n_steps=1,
         num_sanity_val_steps=0,
+        precision = "16-mixed"
     )
 
     trainer.fit(module, datamodule=datamodule)
@@ -606,4 +587,31 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Edit fields here directly, then just run this file (no CLI args needed).
+    config = Config(
+        baseline=False,
+        freeze_encoder=False,
+        surrogate_checkpoint="surrogate_model.pt",
+        image_size=4,
+        n_data=4,
+        n_control=3,
+        latent_dim=None,
+        group_type="auto",
+        train_size=None,
+        epochs=5000,
+        lr=1e-3,
+        weight_decay=0.0,
+        lambda_z=1e-3,
+        z0=10.0,
+        seed=0,
+        eval_every=500,
+        accelerator="gpu",
+        results_dir="results",
+        run_name=None,
+        save_cases=False,
+        num_sample=8,
+        noise_sigmas=None,
+        noise_repeats=20,
+    )
+
+    main(config)
