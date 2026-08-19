@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 
 from brainspy.processors.processor import Processor
-from brainspy.processors.modules.conv import DNPUConv2d
+from dnpu_ae.dnpu_conv import DNPUConv2d_DNPUChild
 
 
 def make_processor():
@@ -31,7 +31,7 @@ def main():
 
     # 2x2 DNPU convolution:
     # one DNPU node, four data electrodes, three control electrodes.
-    conv = DNPUConv2d(
+    conv = DNPUConv2d_DNPUChild(
         processor=processor,
         data_input_indices=[[0, 1, 2, 3]],
         in_channels=1,

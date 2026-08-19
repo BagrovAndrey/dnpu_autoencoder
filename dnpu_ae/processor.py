@@ -2,15 +2,16 @@
 
 This module is the single place that constructs the shared BrainSpy
 ``Processor``. The processor wraps the frozen surrogate backend, while each
-``DNPUConv2d`` created through the backend owns its own trainable
+``DNPUConv2d_DNPUChild`` created through the backend owns its own trainable
 ``control_voltages`` parameters.
 """
 
 from pathlib import Path
 
 import torch
-from brainspy.processors.modules.conv import DNPUConv2d
 from brainspy.processors.processor import Processor
+
+from dnpu_ae.dnpu_conv import DNPUConv2d_DNPUChild
 
 
 DEFAULT_WAVEFORM_CONFIG = {
@@ -26,7 +27,7 @@ class DNPUBackend:
     """Simulation/hardware abstraction that owns one shared BrainSpy processor.
 
     The backend is responsible for constructing the Processor exactly once,
-    freezing all surrogate parameters, and producing ``DNPUConv2d`` layers that
+    freezing all surrogate parameters, and producing ``DNPUConv2d_DNPUChild`` layers that
     reuse that shared processor while keeping per-layer ``control_voltages``
     trainable.
     """
@@ -66,8 +67,8 @@ class DNPUBackend:
         padding=0,
         forward_pass_type="vec",
     ):
-        """Create a DNPUConv2d that reuses the shared frozen Processor."""
-        return DNPUConv2d(
+        """Create a DNPU convolution layer that reuses the shared frozen Processor."""
+        return DNPUConv2d_DNPUChild(
             processor=self.processor,
             data_input_indices=data_input_indices,
             in_channels=in_channels,
