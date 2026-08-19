@@ -1,8 +1,8 @@
 # DNPU autoencoder
 
-Research prototype for grayscale CIFAR-10 autoencoding and latent representation learning with BrainSpy DNPU convolution modules.
+Research prototype for grayscale CIFAR-10 autoencoding and latent representation learning with BrainSpy-based DNPU convolution modules.
 
-The code studies compact autoencoders in which `DNPUConv2d` layers act as trainable nonlinear physical or hardware-like maps. The current system is explicitly **non-autonomous**: DNPU layers provide the nonlinear processing, while routing, normalization, optimization, loss evaluation, and visualization remain digital.
+The code studies compact autoencoders in which DNPU convolution layers act as trainable nonlinear physical or hardware-like maps. The current CIFAR path uses a custom `DNPUConv2d_DNPUChild` wrapper built on top of `DNPUUnit_DNPUChild`, while routing, normalization, optimization, loss evaluation, and visualization remain digital. The system is therefore explicitly **non-autonomous**.
 
 ## Scientific motivation
 
@@ -10,11 +10,11 @@ The main question is whether a very small number of trainable physical control v
 
 The current CIFAR experiments study both physical encoders and DNPU-based decoders:
 
-- DNPUConv encoder stacks that compress `1 x 32 x 32` grayscale images into compact latent representations.
+- DNPU convolution encoder stacks that compress `1 x 32 x 32` grayscale images into compact latent representations.
 - Raw physical bottlenecks versus an additional digital linear bottleneck.
-- Zero-insertion upsampling decoders built either from ordinary `Conv2d` or from BrainSpy `DNPUConv2d`.
+- Zero-insertion upsampling decoders built either from ordinary `Conv2d` or from DNPU convolution layers backed by a shared BrainSpy `Processor`.
 - Zero-insertion upsampling decoders with an additional same-resolution mixing convolution after each upsampling stage.
-- Nearest-neighbor upsampling decoders built either from ordinary `Conv2d` or from BrainSpy `DNPUConv2d`.
+- Nearest-neighbor upsampling decoders built either from ordinary `Conv2d` or from DNPU convolution layers backed by a shared BrainSpy `Processor`.
 - Hybrid decoder variants that first apply a global digital `Linear` map and only then decode with nearest-neighbor upsampling.
 - Freeze ablations for DNPU controls, BatchNorm parameters, and the full encoder.
 - Fixed-decoder hierarchy experiments, including frozen random decoders and oracle-`z` latent optimization.
@@ -26,8 +26,8 @@ The zero-insertion decoder is inspired by transposed convolution, but it is **no
 
 | Role | Current implementation |
 |---|---|
-| Physical or hardware-like nonlinear encoder | `DNPUConv2d` |
-| Physical or hardware-like nonlinear decoder | `DNPUConv2d` in `--decoder-type dnpu_zero_conv`, `dnpu_zero_conv_mixing`, `dnpu_nearest_conv`, and the DNPU convolution stages of `dnpu_nearest_conv_linear` |
+| Physical or hardware-like nonlinear encoder | `DNPUConv2d_DNPUChild` built on `DNPUUnit_DNPUChild` |
+| Physical or hardware-like nonlinear decoder | `DNPUConv2d_DNPUChild` in `--decoder-type dnpu_zero_conv`, `dnpu_zero_conv_mixing`, `dnpu_nearest_conv`, and the DNPU convolution stages of `dnpu_nearest_conv_linear` |
 | Trainable physical parameters | DNPU control voltages |
 | Global latent-to-feature projection | Digital `Linear` in `transpose`, `nearest_conv_linear`, and `dnpu_nearest_conv_linear` |
 | Zero insertion and routing | Digital tensor operations |
@@ -126,13 +126,26 @@ dnpu_ae/
 ├── checkpoints.py
 ├── cifar_data.py
 ├── cifar_models.py
+├── dnpu_conv.py
 ├── model_utils.py
 ├── processor.py
 ├── reconstruction.py
 └── upsampling.py
 ```
 
-`dnpu_ae/processor.py` is the ownership boundary for BrainSpy integration. It builds one shared simulation backend `Processor`, freezes the surrogate parameters inside that backend, and exposes a small factory API that creates per-layer `DNPUConv2d` modules with their own trainable `control_voltages`.
+`dnpu_ae/processor.py` is the ownership boundary for BrainSpy integration. It builds one shared simulation backend `Processor`, freezes the surrogate parameters inside that backend, and exposes a small factory API that creates per-layer `DNPUConv2d_DNPUChild` modules with their own trainable `control_voltages`.
+
+`dnpu_ae/dnpu_conv.py` contains the CIFAR-facing convolution wrapper. Its ownership and inheritance chain is:
+
+```text
+training script
+-> DNPUBackend
+-> DNPUConv2d_DNPUChild
+-> DNPUUnit_DNPUChild
+-> shared BrainSpy Processor
+```
+
+This preserves one shared frozen surrogate backend while keeping each convolution layer's `control_voltages` separate and trainable.
 
 The recent refactor also simplified class structure:
 
@@ -159,9 +172,10 @@ Earlier prototype code for Bars & Stripes remains in the repository root:
 Useful diagnostic and test scripts in the repository root:
 
 - `test_upsampling.py`: unit tests for zero-insertion and nearest-neighbor decoder utilities.
-- `test_dnpuconv_forward.py`: forward/backward smoke test for BrainSpy `DNPUConv2d`.
+- `test_dnpuconv_forward.py`: forward/backward smoke test for `DNPUConv2d_DNPUChild`.
 - `check_surrogate.py`: inspect `surrogate_model.pt` and verify BrainSpy importability.
 - `check_processor_forward.py`, `check_dnpu_unit.py`, `check_dnpu_layer.py`: low-level DNPU processor and custom layer checks.
+- `check_lightning_parameters.py`: compare local parameter counting against `pytorch_lightning` model summaries and verify that surrogate parameters stay frozen while DNPU `control_voltages` remain trainable.
 - `inspect_dnpuconv.py`, `inspect_info.py`: quick introspection helpers for BrainSpy internals and surrogate checkpoint metadata.
 
 ## Installation and environment
