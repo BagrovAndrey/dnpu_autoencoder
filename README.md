@@ -1,5 +1,9 @@
 # DNPU autoencoder
 
+See [RESEARCH_NOTES.md](RESEARCH_NOTES.md) for experimental interpretation,
+open hypotheses, and planned comparisons of DNPU controls against digital
+models with matched trainable-parameter budgets.
+
 Research prototype for grayscale CIFAR-10 autoencoding and latent representation learning with BrainSpy-based DNPU convolution modules.
 
 The code studies compact autoencoders in which DNPU convolution layers act as trainable nonlinear physical or hardware-like maps. The current CIFAR path uses a custom `DNPUConv2d_DNPUChild` wrapper built on top of `DNPUUnit_DNPUChild`, while routing, normalization, optimization, loss evaluation, and visualization remain digital. The system is therefore explicitly **non-autonomous**.
@@ -211,6 +215,16 @@ python -c "from dnpu_ae.cifar_data import make_grayscale_cifar_subsets; make_gra
 ```
 
 After that, the local directory will contain the usual `torchvision` CIFAR files under `data_cifar/`.
+
+Alternatively, the loader supports extracted PNG images under
+`data_cifar/cifar10/train/<class>/*.png` and
+`data_cifar/cifar10/test/<class>/*.png`, as provided by the local Kaggle
+`archive.zip`. Extract that archive into `data_cifar/` before running. When both
+split folders exist, the loader uses them without downloading the original batch
+files. Class labels retain standard CIFAR-10 numbering. Folder samples are
+shuffled with a fixed seed before subset selection to avoid class-grouped
+prefixes; these subsets differ from the original batch-file subsets, so results
+from the two data layouts are not directly reproducible from the same seed alone.
 
 The preprocessing path is:
 
